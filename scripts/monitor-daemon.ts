@@ -9,7 +9,7 @@ import { DEFAULT_LARK_WEBHOOK_URL, formatMemeAlarmText, sendLarkAlarm } from "..
 
 const LARK_WEBHOOK_URL = process.env.LARK_WEBHOOK_URL || DEFAULT_LARK_WEBHOOK_URL;
 const CHECK_INTERVAL_MS = Number(process.env.INTERVAL_MS || 60_000);
-const MIN_SCORE = Number(process.env.MIN_SCORE || 65);
+const MIN_SCORE = Number(process.env.MIN_SCORE || 80);
 const MIN_LIQ_USD = Number(process.env.MIN_LIQ || 30_000);
 const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
 
@@ -20,7 +20,7 @@ console.log("🚀 [Robinhood Chain] Potential Meme Token Monitor Daemon");
 console.log("========================================================");
 console.log(`• Network: Robinhood Chain (ChainId 4663)`);
 console.log(`• Interval: ${CHECK_INTERVAL_MS / 1000}s`);
-console.log(`• Threshold: Score ≥ ${MIN_SCORE} (A/S-Tier) & Liq ≥ $${MIN_LIQ_USD}`);
+console.log(`• Threshold: Score ≥ ${MIN_SCORE} (S-Tier) & Liq ≥ $${MIN_LIQ_USD}`);
 console.log(`• Webhook: ${LARK_WEBHOOK_URL.slice(0, 45)}...`);
 console.log(`• Prefix: ** (Strict requirement verified)`);
 console.log("========================================================\n");
@@ -38,7 +38,7 @@ async function runScanCycle() {
     for (const c of candidates) {
       const ind = c.indicators || evaluateMemeToken(c, null);
       const isPotential =
-        (ind.isPotentialAlarm || ind.totalScore >= MIN_SCORE || c.verdict === "ALERT") &&
+        ind.totalScore >= MIN_SCORE &&
         ind.isLpLocked &&
         (c.liquidityUsd || 0) >= MIN_LIQ_USD;
 
