@@ -85,7 +85,9 @@ export function formatMemeAlarmText(
 💎 代币标的: $${candidate.symbol} (${candidate.name})
 🎯 潜力评级: ${tierEmoji} (综合得分: ${indicators.totalScore}/100)
 💼 策略仓位: ${posTier}
-📍 合约地址 (CA):
+━━━━━━━━━━━━━━━━━━━
+📋【合约地址 CA - 独立单行/长按或双击一键复制】:
+
 ${candidate.address}
 
 ━━━━━━━━━━━━━━━━━━━
