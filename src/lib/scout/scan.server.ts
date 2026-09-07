@@ -16,7 +16,7 @@ import {
   fetchTokenInfo,
   ponsLaunch,
 } from "./blockscout";
-import { fetchDexPairs, fetchProfiles, pairStats, tweetFromProfile } from "./dexscreener";
+import { fetchDexPairs, fetchDexSearchPairs, fetchProfiles, pairStats, tweetFromProfile } from "./dexscreener";
 import { applyGrade, buildLights, buildSoft } from "./filters";
 import { evaluateMemeToken } from "./indicators";
 import { mapLimit, num } from "./http";
@@ -41,10 +41,14 @@ export async function runScan(force = false): Promise<ScanResult> {
   if (!force && cache && Date.now() - cache.at < SCAN_TTL_MS) return cache.result;
   const scannedAt = new Date().toISOString();
   try {
-    const [{ events, pages }, stocks, profiles] = await Promise.all([
-      fetchFactoryEvents(),
-      fetchStockAssets(),
-      fetchProfiles(),
+    const [{ events, pages }, stocks, profiles, searchPairs] = await Promise.all([
+      fetchFactoryEvents().catch((e) => {
+        console.warn("[Scan] fetchFactoryEvents fallback:", e?.message || e);
+        return { events: [], pages: 0 };
+      }),
+      fetchStockAssets().catch(() => []),
+      fetchProfiles().catch(() => new Map()),
+      fetchDexSearchPairs("robinhood").catch(() => []),
     ]);
 
     const deployerCount = new Map<string, number>();
@@ -83,12 +87,25 @@ export async function runScan(force = false): Promise<ScanResult> {
     const newestList = [...launched.keys()].filter((a) => !graduated.has(a));
     const pick: { address: string; stage: Stage }[] = [];
     for (const a of graduateList) {
-      if (pick.length >= HYDRATE_MAX) break;
+      if (pick.length >= 15) break;
       pick.push({ address: a, stage: "graduated" });
     }
     for (const a of newestList) {
-      if (pick.length >= HYDRATE_MAX) break;
+      if (pick.length >= 25) break;
       pick.push({ address: a, stage: "bonding" });
+    }
+
+    // Also include active / trending Robinhood pairs from DexScreener
+    for (const sp of searchPairs) {
+      const addr = sp.baseToken?.address?.toLowerCase();
+      if (addr && !pick.some((x) => x.address.toLowerCase() === addr)) {
+        pick.push({ address: addr, stage: "graduated" });
+      }
+    }
+    for (const [addr] of profiles) {
+      if (!pick.some((x) => x.address.toLowerCase() === addr)) {
+        pick.push({ address: addr, stage: "graduated" });
+      }
     }
 
     const dexMap = await fetchDexPairs(pick.map((p) => p.address));

@@ -31,24 +31,46 @@ export type TokenProfile = {
 export async function fetchDexPairs(addresses: string[]): Promise<Map<string, DexPair>> {
   const map = new Map<string, DexPair>();
   const unique = [...new Set(addresses.map((a) => a.toLowerCase()))];
-  await mapLimit(unique, 3, async (addr) => {
+  if (unique.length === 0) return map;
+
+  // DexScreener supports up to 30 comma-separated addresses per request
+  const CHUNK_SIZE = 25;
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+    chunks.push(unique.slice(i, i + CHUNK_SIZE));
+  }
+
+  await mapLimit(chunks, 2, async (chunk) => {
     try {
-      const rows = await fetchJson<DexPair[]>(
-        `https://api.dexscreener.com/tokens/v1/${CHAIN_SLUG}/${addr}`,
-        { retries: 2, timeoutMs: 8_000 },
-      );
+      const url = `https://api.dexscreener.com/tokens/v1/${CHAIN_SLUG}/${chunk.join(",")}`;
+      const rows = await fetchJson<DexPair[]>(url, { retries: 2, timeoutMs: 8_000 });
       if (!Array.isArray(rows)) return;
       for (const p of rows) {
-        const key = p.baseToken?.address?.toLowerCase() ?? addr;
+        const key = p.baseToken?.address?.toLowerCase();
+        if (!key) continue;
         const prev = map.get(key);
         const liq = p.liquidity?.usd ?? 0;
         if (!prev || (prev.liquidity?.usd ?? 0) < liq) map.set(key, p);
       }
     } catch {
-      /* leave missing — UNKNOWN is safer than inventing a pool */
+      /* leave missing */
     }
   });
   return map;
+}
+
+export async function fetchDexSearchPairs(query = "robinhood"): Promise<DexPair[]> {
+  try {
+    const res = await fetchJson<{ pairs?: DexPair[] }>(
+      `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`,
+      { retries: 1, timeoutMs: 8_000 },
+    );
+    return (res.pairs || []).filter(
+      (p) => String(p.chainId).toLowerCase() === CHAIN_SLUG,
+    );
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchProfiles(): Promise<Map<string, TokenProfile>> {

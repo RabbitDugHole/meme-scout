@@ -6,6 +6,7 @@ import {
   TRANSFER_PAGES,
 } from "./constants";
 import { asAddr, fetchJson, num } from "./http";
+import { fetchFactoryLogsFromRpc } from "./rpc";
 
 const BS = "https://robinhoodchain.blockscout.com/api/v2";
 
@@ -85,36 +86,53 @@ export async function fetchFactoryEvents(): Promise<{
   const events: FactoryEvent[] = [];
   let pages = 0;
   let qs = "";
-  for (let i = 0; i < LOG_PAGES_MAX; i++) {
-    const page = await fetchJson<LogPage>(
-      `${BS}/addresses/${PONS_FACTORY}/logs${qs}`,
-    );
-    pages++;
-    for (const item of page.items ?? []) {
-      const decoded = item.decoded;
-      const method = methodName(decoded?.method_call);
-      const params = decoded?.parameters;
-      events.push({
-        method,
-        token: param(params, "token"),
-        curve: param(params, "curve"),
-        deployer: param(params, "deployer"),
-        pairToken: param(params, "pairToken"),
-        timestamp: item.block_timestamp ?? null,
-        tx: item.transaction_hash ?? null,
-      });
-    }
-    const n = page.next_page_params;
-    if (!n || !page.items?.length) break;
-    const oldest = page.items[page.items.length - 1]?.block_timestamp;
-    if (oldest) {
-      const age = Date.now() - new Date(oldest).getTime();
-      if (age > 6 * 60 * 60 * 1000 && events.filter((e) => e.method === "PoolGraduated").length >= 6) {
-        break;
+
+  try {
+    for (let i = 0; i < LOG_PAGES_MAX; i++) {
+      const page = await fetchJson<LogPage>(
+        `${BS}/addresses/${PONS_FACTORY}/logs${qs}`,
+        { timeoutMs: 6000, retries: 1 },
+      );
+      pages++;
+      for (const item of page.items ?? []) {
+        const decoded = item.decoded;
+        const method = methodName(decoded?.method_call);
+        const params = decoded?.parameters;
+        events.push({
+          method,
+          token: param(params, "token"),
+          curve: param(params, "curve"),
+          deployer: param(params, "deployer"),
+          pairToken: param(params, "pairToken"),
+          timestamp: item.block_timestamp ?? null,
+          tx: item.transaction_hash ?? null,
+        });
       }
+      const n = page.next_page_params;
+      if (!n || !page.items?.length) break;
+      const oldest = page.items[page.items.length - 1]?.block_timestamp;
+      if (oldest) {
+        const age = Date.now() - new Date(oldest).getTime();
+        if (age > 6 * 60 * 60 * 1000 && events.filter((e) => e.method === "PoolGraduated").length >= 6) {
+          break;
+        }
+      }
+      qs = `?block_number=${n.block_number}&index=${n.index}&items_count=${n.items_count ?? 50}`;
     }
-    qs = `?block_number=${n.block_number}&index=${n.index}&items_count=${n.items_count ?? 50}`;
+  } catch (err: any) {
+    console.warn("[Blockscout] Logs rate-limited or challenge detected, falling back to on-chain RPC logs:", err?.message || err);
   }
+
+  // If Blockscout is rate-limited or empty, automatically fallback to direct on-chain RPC logs!
+  if (events.length === 0) {
+    try {
+      const rpcEvents = await fetchFactoryLogsFromRpc(PONS_FACTORY, 35_000);
+      events.push(...rpcEvents);
+    } catch (rpcErr) {
+      console.warn("[RPC] On-chain log query fallback error:", rpcErr);
+    }
+  }
+
   return { events, pages };
 }
 

@@ -116,6 +116,7 @@ class PotentialMemeMonitor {
 
     this.isScanInProgress = true;
     this.lastScanTime = new Date().toISOString();
+    console.log(`[Monitor] 🔍 开始执行 Robinhood 链上巡检扫描 (强制模式: ${forceCheck})...`);
 
     try {
       const scanResult = await runScan(true);
@@ -162,6 +163,11 @@ class PotentialMemeMonitor {
           );
           larkOk = sendRes.ok;
           larkMsg = sendRes.msg || sendRes.error || (sendRes.ok ? "Success" : "Failed");
+          if (larkOk) {
+            console.log(`[Monitor] ✅ 飞书报警成功送达: $${candidate.symbol} (${candidate.name}) - 得分: ${indicators.totalScore}`);
+          } else {
+            console.warn(`[Monitor] ⚠️ 飞书报警推送失败: ${larkMsg}`);
+          }
         } else {
           larkOk = true;
           larkMsg = "Simulated (Auto-alarm disabled in config)";
@@ -198,11 +204,22 @@ class PotentialMemeMonitor {
         newAlarms.push(record);
       }
 
+      const potCount = candidates.filter((c) => (c.indicators?.totalScore ?? 0) >= this.config.minScoreThreshold).length;
+      console.log(`[Monitor] ✨ 巡检完成: 扫描 ${candidates.length} 个代币, 发现 ${potCount} 个高潜力, 新推送 ${newAlarms.length} 条告警`);
+
       return {
         scannedCount: candidates.length,
-        potentialCount: candidates.filter((c) => (c.indicators?.totalScore ?? 0) >= this.config.minScoreThreshold).length,
+        potentialCount: potCount,
         newAlarmsSent: newAlarms.length,
         alarms: newAlarms,
+      };
+    } catch (err: any) {
+      console.warn("[Monitor] 巡检异常:", err?.message || err);
+      return {
+        scannedCount: 0,
+        potentialCount: 0,
+        newAlarmsSent: 0,
+        alarms: [],
       };
     } finally {
       this.isScanInProgress = false;
