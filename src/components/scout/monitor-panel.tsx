@@ -46,7 +46,7 @@ export function MonitorPanel({
   const [webhookUrl, setWebhookUrl] = useState(
     status?.config.webhookUrl || DEFAULT_LARK_WEBHOOK_URL,
   );
-  const [minScore, setMinScore] = useState(status?.config.minScoreThreshold ?? 65);
+  const [minScore, setMinScore] = useState(status?.config.minScoreThreshold ?? 80);
   const [minLiq, setMinLiq] = useState(status?.config.minLiquidityUsd ?? 30000);
   const [autoAlarm, setAutoAlarm] = useState(
     status?.config.autoAlarmEnabled ?? true,
@@ -177,7 +177,7 @@ export function MonitorPanel({
             <p>
               告警门槛:{" "}
               <strong className="text-foreground">
-                评分 ≥ {minScore} 分 (A/S级)
+                评分 ≥ {minScore} 分 (S-Tier 极高潜力)
               </strong>
             </p>
             <p>
@@ -293,7 +293,7 @@ export function MonitorPanel({
                 <span className="text-xs text-muted-foreground">分</span>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                建议 65 分 (A-Tier/S-Tier 强劲潜力)
+                建议 ≥ 80 分 (S-Tier 极高爆发潜力代币)
               </p>
             </div>
 
