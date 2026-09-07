@@ -256,9 +256,9 @@ export function evaluateMemeToken(
     if (potentialTier === "S" || potentialTier === "A") potentialTier = "B";
   }
 
-  // Criteria for triggering automated alarms
+  // Criteria for triggering automated alarms: Score >= 80 (S-Tier)
   const isPotentialAlarm =
-    (candidate.verdict === "ALERT" || totalScore >= 65) &&
+    totalScore >= 80 &&
     isLpLocked &&
     (candidate.liquidityUsd ?? 0) >= 30_000;
 
