@@ -14,7 +14,7 @@ class PotentialMemeMonitor {
 
   private config: MonitorConfig = {
     webhookUrl: DEFAULT_LARK_WEBHOOK_URL,
-    minScoreThreshold: 65,
+    minScoreThreshold: 80, // Default to S-Tier (Score >= 80)
     minLiquidityUsd: 30000,
     cooldownMinutes: 120, // 2 hours cooldown per token
     intervalSeconds: 60, // 60s check interval
@@ -127,11 +127,9 @@ class PotentialMemeMonitor {
         const indicators = candidate.indicators;
         if (!indicators) continue;
 
-        // Check potential token criteria
+        // Check potential token criteria: strictly require score >= minScoreThreshold (default 80)
         const isPotential =
-          (candidate.verdict === "ALERT" ||
-            indicators.isPotentialAlarm ||
-            indicators.totalScore >= this.config.minScoreThreshold) &&
+          indicators.totalScore >= this.config.minScoreThreshold &&
           indicators.isLpLocked &&
           (candidate.liquidityUsd ?? 0) >= this.config.minLiquidityUsd;
 
