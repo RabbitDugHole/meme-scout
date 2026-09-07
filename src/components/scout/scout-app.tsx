@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Bell,
   BookOpen,
   Eye,
   Landmark,
@@ -9,6 +10,7 @@ import {
   Search,
 } from "lucide-react";
 import { InspectPanel } from "@/components/scout/inspect-panel";
+import { MonitorPanel } from "@/components/scout/monitor-panel";
 import { Playbook } from "@/components/scout/playbook";
 import { StockPanel } from "@/components/scout/stock-panel";
 import { TokenCard } from "@/components/scout/token-card";
@@ -24,6 +26,7 @@ import { cn } from "@/lib/utils";
 
 const TABS = [
   { id: "radar", label: "雷达", icon: Radar },
+  { id: "alarm", label: "监控告警", icon: Bell },
   { id: "watch", label: "观察仓", icon: Eye },
   { id: "inspect", label: "验合约", icon: Search },
   { id: "pairs", label: "配对", icon: Landmark },
@@ -153,6 +156,7 @@ export function ScoutApp() {
             onInspect={openInspect}
           />
         ) : null}
+        {tab === "alarm" ? <MonitorPanel onInspect={openInspect} /> : null}
         {tab === "watch" ? <WatchPanel /> : null}
         {tab === "inspect" ? (
           <InspectPanel
@@ -165,7 +169,7 @@ export function ScoutApp() {
       </main>
 
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-hairline bg-background/95 px-2 py-2 backdrop-blur sm:hidden">
-        <div className="grid grid-cols-5">
+        <div className="grid grid-cols-6">
           {TABS.map((t) => (
             <button
               key={t.id}

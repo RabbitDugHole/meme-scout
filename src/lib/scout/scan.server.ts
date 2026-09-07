@@ -305,7 +305,7 @@ export async function inspectAddress(address: string): Promise<Candidate | { err
     dexscreenerTrending: dex.trending,
   });
 
-  return applyGrade({
+  const candidate = applyGrade({
     address,
     name: dex.name || info?.name || rpcMeta.name || "Unknown",
     symbol: dex.symbol || info?.symbol || rpcMeta.symbol || "???",

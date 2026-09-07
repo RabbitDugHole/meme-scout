@@ -60,7 +60,7 @@ export function evaluateMemeToken(
   const mcap = candidate.mcapUsd ?? (dexPair?.marketCap ?? dexPair?.fdv ?? null);
   const liq = candidate.liquidityUsd ?? (dexPair?.liquidity?.usd ?? null);
   const vol1h = candidate.volumeH1 ?? (dexPair?.volume?.h1 ?? null);
-  const vol24h = dexPair?.volume?.h24 ?? null;
+  const volume24h = dexPair?.volume?.h24 ?? null;
   const volM5 = dexPair?.volume?.m5 ?? null;
   const pcM5 = dexPair?.priceChange?.m5 ?? null;
   const pcH1 = candidate.priceChangeH1 ?? (dexPair?.priceChange?.h1 ?? null);
@@ -73,7 +73,7 @@ export function evaluateMemeToken(
   const buyRatio = totalTxns > 0 ? buys / totalTxns : null;
 
   // Ratios
-  const liqMcapRatio = liq != null && mcap != null && mcap > 0 ? liq / mcap : null;
+  const liquidityMcapRatio = liq != null && mcap != null && mcap > 0 ? liq / mcap : null;
   const volLiqRatio1h = vol1h != null && liq != null && liq > 0 ? vol1h / liq : null;
 
   // Safety flags
@@ -104,7 +104,7 @@ export function evaluateMemeToken(
 
   const smartBuyersCount = candidate.smartBuyers2h.length;
   const isStockPaired = Boolean(candidate.stockPair);
-  const hasSocials = Boolean(candidate.tweetUrl || dexPair?.links?.length);
+  const hasSocials = Boolean(candidate.tweetUrl || dexPair?.url);
 
   // --- Dimension Scoring (0 - 100) ---
   const signals: string[] = [];
@@ -185,12 +185,12 @@ export function evaluateMemeToken(
     }
   }
 
-  if (liqMcapRatio != null) {
-    if (liqMcapRatio >= 0.18 && liqMcapRatio <= 0.55) {
+  if (liquidityMcapRatio != null) {
+    if (liquidityMcapRatio >= 0.18 && liquidityMcapRatio <= 0.55) {
       liquidityScore += 5;
-      signals.push(`资金池比例 ${(liqMcapRatio * 100).toFixed(1)}% 健康`);
-    } else if (liqMcapRatio < 0.10) {
-      risks.push(`流动性/市值比仅 ${(liqMcapRatio * 100).toFixed(1)}%，滑点大易崩塌`);
+      signals.push(`资金池比例 ${(liquidityMcapRatio * 100).toFixed(1)}% 健康`);
+    } else if (liquidityMcapRatio < 0.10) {
+      risks.push(`流动性/市值比仅 ${(liquidityMcapRatio * 100).toFixed(1)}%，滑点大易崩塌`);
     }
   }
 

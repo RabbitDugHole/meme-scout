@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
 import {
+  Bell,
   ExternalLink,
   Eye,
   Radio,
+  Send,
   Timer,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useMutation } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FilterLights, LightCount, SoftLightsRow } from "@/components/scout/lights";
 import { DECISION_MS, RISK_FOOTER, TIER_SIZE } from "@/lib/scout/constants";
+import { sendCandidateToLark } from "@/lib/scout/actions";
 import {
   countdown,
   formatAge,
@@ -52,6 +56,20 @@ export function TokenCard({
   const expired = left != null && left <= 0;
   const v = verdictBadge(c);
 
+  const larkMutation = useMutation({
+    mutationFn: () => sendCandidateToLark({ data: { candidate: c } }),
+    onSuccess: (res) => {
+      if (res.larkOk) {
+        toast.success(`已成功推送 $${c.symbol} 到飞书告警群！`);
+      } else {
+        toast.error(`飞书推送失败: ${res.larkMsg || "未知错误"}`);
+      }
+    },
+    onError: (err: any) => {
+      toast.error(`推送出错: ${err?.message || String(err)}`);
+    },
+  });
+
   return (
     <article
       className={cn(
@@ -66,6 +84,25 @@ export function TokenCard({
               ${c.symbol}
             </h3>
             <Badge variant={v.variant}>{v.label}</Badge>
+            {c.indicators ? (
+              <Badge
+                variant={
+                  c.indicators.potentialTier === "S"
+                    ? "go"
+                    : c.indicators.potentialTier === "A"
+                      ? "go"
+                      : "default"
+                }
+                className="font-mono font-bold"
+              >
+                {c.indicators.potentialTier === "S"
+                  ? "🌟 S级潜力"
+                  : c.indicators.potentialTier === "A"
+                    ? "🚀 A级强力"
+                    : `⚡ ${c.indicators.potentialTier}级`}{" "}
+                {c.indicators.totalScore}分
+              </Badge>
+            ) : null}
             <Badge variant={c.stage === "graduated" ? "go" : "default"}>
               {c.stage === "graduated" ? "刚毕业" : c.stage === "bonding" ? "曲线中" : "未知阶段"}
             </Badge>
@@ -169,6 +206,17 @@ export function TokenCard({
         <Button size="sm" variant="ghost" onClick={() => onInspect?.(c.address)}>
           <Radio />
           体检
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => larkMutation.mutate()}
+          disabled={larkMutation.isPending}
+          className="gap-1 text-cyan-400 hover:text-cyan-300"
+          title="将当前 Meme 币深度指标立即推送到飞书群"
+        >
+          <Send className={cn("size-3.5", larkMutation.isPending && "animate-spin")} />
+          {larkMutation.isPending ? "推送中..." : "飞书推送"}
         </Button>
         {c.tweetUrl ? (
           <Button size="sm" variant="ghost" asChild>
