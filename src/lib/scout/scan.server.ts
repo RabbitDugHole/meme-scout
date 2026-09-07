@@ -18,6 +18,7 @@ import {
 } from "./blockscout";
 import { fetchDexPairs, fetchProfiles, pairStats, tweetFromProfile } from "./dexscreener";
 import { applyGrade, buildLights, buildSoft } from "./filters";
+import { evaluateMemeToken } from "./indicators";
 import { mapLimit, num } from "./http";
 import { fetchStockAssets, matchStock } from "./stocks";
 import { erc20Meta } from "./rpc";
@@ -203,7 +204,9 @@ export async function runScan(force = false): Promise<ScanResult> {
         soft,
       };
 
-      return applyGrade(base);
+      const candidate = applyGrade(base);
+      const indicators = evaluateMemeToken(candidate, dexMap.get(address));
+      return { ...candidate, indicators };
     });
 
     const candidates = hydrated.sort((a, b) => {
@@ -338,6 +341,8 @@ export async function inspectAddress(address: string): Promise<Candidate | { err
     lights,
     soft,
   });
+  const indicators = evaluateMemeToken(candidate, dexMap.get(addr));
+  return { ...candidate, indicators };
 }
 
 export async function quotePrices(addresses: string[]) {

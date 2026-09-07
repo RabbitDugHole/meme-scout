@@ -48,3 +48,47 @@ export const scoreTokenNarrative = createServerFn({ method: "POST" })
     const { scoreNarrative } = await import("./scan.server");
     return scoreNarrative(data);
   });
+
+export const getMonitorStatus = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { monitorService } = await import("./monitor.server");
+    return monitorService.getState();
+  },
+);
+
+export const triggerMonitorScan = createServerFn({ method: "POST" })
+  .validator((input: { forceCheck?: boolean } | undefined) => input ?? {})
+  .handler(async ({ data }) => {
+    const { monitorService } = await import("./monitor.server");
+    return monitorService.runCycle(Boolean(data?.forceCheck));
+  });
+
+export const updateMonitorConfig = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      webhookUrl?: string;
+      minScoreThreshold?: number;
+      minLiquidityUsd?: number;
+      cooldownMinutes?: number;
+      intervalSeconds?: number;
+      autoAlarmEnabled?: boolean;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { monitorService } = await import("./monitor.server");
+    return monitorService.updateConfig(data);
+  });
+
+export const sendTestLarkAlarm = createServerFn({ method: "POST" })
+  .validator((input: { webhookUrl?: string } | undefined) => input ?? {})
+  .handler(async ({ data }) => {
+    const { sendLarkTestMessage } = await import("./lark");
+    return sendLarkTestMessage(data?.webhookUrl);
+  });
+
+export const sendCandidateToLark = createServerFn({ method: "POST" })
+  .validator((input: { candidate: any }) => input)
+  .handler(async ({ data }) => {
+    const { monitorService } = await import("./monitor.server");
+    return monitorService.sendManualAlarm(data.candidate);
+  });

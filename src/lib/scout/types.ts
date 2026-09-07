@@ -1,3 +1,5 @@
+import type { MemeIndicators } from "./indicators";
+
 export type Light = "PASS" | "FAIL" | "UNKNOWN";
 export type Verdict = "ALERT" | "LATE" | "SKIP";
 export type Tier = 1 | 2 | 3 | null;
@@ -69,6 +71,7 @@ export type Candidate = {
   tier: Tier;
   hardPassed: number;
   reasons: string[];
+  indicators?: MemeIndicators;
 };
 
 export type ScanMeta = {
@@ -115,4 +118,39 @@ export type StockAsset = {
   contract: string;
   logoUrl: string | null;
   status: string;
+};
+
+export type AlarmRecord = {
+  id: string;
+  tokenAddress: string;
+  symbol: string;
+  name: string;
+  score: number;
+  tier: string;
+  timestamp: string;
+  larkOk: boolean;
+  larkMsg?: string;
+  priceUsd?: number | null;
+  mcapUsd?: number | null;
+  liquidityUsd?: number | null;
+  signals?: string[];
+  risks?: string[];
+};
+
+export type MonitorConfig = {
+  webhookUrl: string;
+  minScoreThreshold: number;
+  minLiquidityUsd: number;
+  cooldownMinutes: number;
+  intervalSeconds: number;
+  autoAlarmEnabled: boolean;
+};
+
+export type MonitorState = {
+  isRunning: boolean;
+  config: MonitorConfig;
+  lastScanTime: string | null;
+  nextScanTime: string | null;
+  alertedCount: number;
+  history: AlarmRecord[];
 };
