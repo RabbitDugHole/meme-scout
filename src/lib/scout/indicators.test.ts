@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateMemeToken } from "./indicators.ts";
-import { formatMemeAlarmText } from "./lark.ts";
+import { formatMemeAlarmText, formatMemeAlarmCard } from "./lark.ts";
 import type { Candidate } from "./types.ts";
 
 const mockCandidate: Candidate = {
@@ -104,4 +104,22 @@ test("evaluateMemeToken flags unlocked LP and low score for risky token", () => 
   assert.equal(ind.isLpLocked, false);
   assert.equal(ind.isPotentialAlarm, false);
   assert.ok(ind.totalScore < 50, `Expected score < 50, got ${ind.totalScore}`);
+});
+
+test("formatMemeAlarmCard strictly begins with ** and contains copyable address code block", () => {
+  const ind = evaluateMemeToken(mockCandidate);
+  const card = formatMemeAlarmCard(mockCandidate, ind);
+
+  assert.ok(
+    card.header.title.content.startsWith("**"),
+    "Card header title MUST strictly begin with '**'",
+  );
+  assert.equal(card.header.template, "carmine"); // Score >= 80
+
+  const cardJson = JSON.stringify(card);
+  assert.ok(
+    cardJson.includes("```text\\n" + mockCandidate.address + "\\n```"),
+    "Card MUST contain contract address in code block for 1-click copy",
+  );
+  assert.ok(cardJson.includes("DexScreener"), "Card MUST include DexScreener button");
 });
