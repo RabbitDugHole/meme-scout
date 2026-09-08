@@ -92,3 +92,56 @@ export const sendCandidateToLark = createServerFn({ method: "POST" })
     const { monitorService } = await import("./monitor.server");
     return monitorService.sendManualAlarm(data.candidate);
   });
+
+export const getTgMonitorStatus = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { tgMonitorService } = await import("./tg-monitor.server");
+    return tgMonitorService.getState();
+  },
+);
+
+export const triggerTgPoll = createServerFn({ method: "POST" })
+  .validator((input: { force?: boolean } | undefined) => input ?? {})
+  .handler(async ({ data }) => {
+    const { tgMonitorService } = await import("./tg-monitor.server");
+    return tgMonitorService.runPollCycle(Boolean(data?.force));
+  });
+
+export const updateTgMonitorConfig = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      webhookUrl?: string;
+      minScoreThreshold?: number;
+      minLiquidityUsd?: number;
+      cooldownMinutes?: number;
+      pollIntervalSeconds?: number;
+      autoAlarmEnabled?: boolean;
+      enabled?: boolean;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { tgMonitorService } = await import("./tg-monitor.server");
+    return tgMonitorService.updateConfig(data);
+  });
+
+export const addTgChannel = createServerFn({ method: "POST" })
+  .validator((input: { channel: string; name?: string }) => input)
+  .handler(async ({ data }) => {
+    const { tgMonitorService } = await import("./tg-monitor.server");
+    return tgMonitorService.addChannel(data.channel, data.name);
+  });
+
+export const removeTgChannel = createServerFn({ method: "POST" })
+  .validator((input: { channel: string }) => input)
+  .handler(async ({ data }) => {
+    const { tgMonitorService } = await import("./tg-monitor.server");
+    return tgMonitorService.removeChannel(data.channel);
+  });
+
+export const toggleTgChannel = createServerFn({ method: "POST" })
+  .validator((input: { channel: string; enabled?: boolean }) => input)
+  .handler(async ({ data }) => {
+    const { tgMonitorService } = await import("./tg-monitor.server");
+    return tgMonitorService.toggleChannel(data.channel, data.enabled);
+  });
+
