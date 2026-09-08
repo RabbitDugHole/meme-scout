@@ -86,8 +86,8 @@ export function formatMemeAlarmText(
 🎯 潜力评级: ${tierEmoji} (综合得分: ${indicators.totalScore}/100)
 💼 策略仓位: ${posTier}
 ━━━━━━━━━━━━━━━━━━━
-📋【合约地址 CA - 代码框/长按一键复制】:
-\`\`\`text
+📋【合约地址 CA - 独立代码块 / 点击快速复制】:
+\`\`\`bash
 ${candidate.address}
 \`\`\`
 ${candidate.address}
@@ -267,7 +267,14 @@ export function formatMemeAlarmCard(
         tag: "div",
         text: {
           tag: "lark_md",
-          content: `**📋 合约地址 CA (点击框内右上角 📋 一键复制):**\n\`\`\`text\n${candidate.address}\n\`\`\``,
+          content: "**📋 合约地址 CA (独立代码块 / 点击快速复制):**",
+        },
+      },
+      {
+        tag: "div",
+        text: {
+          tag: "lark_md",
+          content: `\`\`\`bash\n${candidate.address}\n\`\`\``,
         },
       },
       {
@@ -422,7 +429,14 @@ export async function sendLarkTestMessage(
               tag: "div",
               text: {
                 tag: "lark_md",
-                content: `**📋 测试代币合约 (点击代码框右上角 📋 一键复制):**\n\`\`\`text\n${testAddress}\n\`\`\``,
+                content: "**📋 测试代币合约 (独立代码块 / 点击快速复制):**",
+              },
+            },
+            {
+              tag: "div",
+              text: {
+                tag: "lark_md",
+                content: `\`\`\`bash\n${testAddress}\n\`\`\``,
               },
             },
             {

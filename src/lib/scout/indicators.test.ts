@@ -118,8 +118,8 @@ test("formatMemeAlarmCard strictly begins with ** and contains copyable address 
 
   const cardJson = JSON.stringify(card);
   assert.ok(
-    cardJson.includes("```text\\n" + mockCandidate.address + "\\n```"),
-    "Card MUST contain contract address in code block for 1-click copy",
+    cardJson.includes("```bash\\n" + mockCandidate.address + "\\n```"),
+    "Card MUST contain contract address in bash code block for 1-click copy",
   );
   assert.ok(cardJson.includes("DexScreener"), "Card MUST include DexScreener button");
 });
