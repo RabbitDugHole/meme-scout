@@ -154,3 +154,104 @@ export type MonitorState = {
   alertedCount: number;
   history: AlarmRecord[];
 };
+
+export type TgChannelConfig = {
+  username: string; // e.g. "lanniaohui"
+  name?: string;     // e.g. "Bluebird 监控频道🕊️"
+  enabled: boolean;
+};
+
+export type TgMessageParsed = {
+  postId: string; // e.g. "lanniaohui/15468"
+  channel: string;
+  url: string;
+  symbol: string;
+  name?: string;
+  chain: string; // e.g. "Robinhood Chain", "BSC", "Solana", etc.
+  address: string;
+  tgMcap?: string;
+  tgInflow?: string;
+  tgHolders?: number;
+  tgDuration?: string;
+  smartMoneyCount?: number;
+  kolCount?: number;
+  fomoCount?: number;
+  tgSafety?: string;
+  narrative?: string;
+  tweetUrl?: string;
+  timestamp: string;
+  rawText: string;
+};
+
+export type TgTokenEvaluation = {
+  token: TgMessageParsed;
+  liveData: {
+    priceUsd?: number | null;
+    mcapUsd?: number | null;
+    liquidityUsd?: number | null;
+    volumeH1?: number | null;
+    priceChangeH1?: number | null;
+    buysH1?: number;
+    sellsH1?: number;
+    dexUrl?: string;
+    pairAddress?: string;
+    hasTwitter?: boolean;
+    hasWebsite?: boolean;
+  } | null;
+  totalScore: number;
+  potentialTier: string;
+  signals: string[];
+  risks: string[];
+  passedFilter: boolean;
+  filterReason?: string;
+};
+
+export type TgAlarmRecord = {
+  id: string;
+  postId: string;
+  channel: string;
+  channelUrl: string;
+  tokenAddress: string;
+  symbol: string;
+  chain: string;
+  score: number;
+  tier: string;
+  timestamp: string;
+  larkOk: boolean;
+  larkMsg?: string;
+  priceUsd?: number | null;
+  mcapUsd?: number | null;
+  liquidityUsd?: number | null;
+  volumeH1?: number | null;
+  priceChangeH1?: number | null;
+  smartMoneyCount?: number;
+  kolCount?: number;
+  signals: string[];
+  risks: string[];
+  dexUrl?: string;
+  tweetUrl?: string;
+};
+
+export type TgMonitorConfig = {
+  channels: TgChannelConfig[];
+  enabled: boolean;
+  pollIntervalSeconds: number; // default: 30
+  minScoreThreshold: number;   // default: 80
+  minLiquidityUsd: number;     // default: 20000
+  cooldownMinutes: number;     // default: 120
+  autoAlarmEnabled: boolean;
+  webhookUrl: string;
+};
+
+export type TgMonitorState = {
+  isRunning: boolean;
+  config: TgMonitorConfig;
+  lastPollTime: string | null;
+  nextPollTime: string | null;
+  parsedMessagesCount: number;
+  evaluatedTokensCount: number;
+  alertedCount: number;
+  recentEvaluations: TgTokenEvaluation[];
+  history: TgAlarmRecord[];
+};
+
