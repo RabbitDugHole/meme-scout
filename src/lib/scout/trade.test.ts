@@ -1,6 +1,9 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { formatTradeAlertText } from "./lark";
+import {
+  formatComprehensiveTradeReport,
+  formatTradeAlertText,
+} from "./lark";
 import { tradeService, TradeService } from "./trade.server";
 import type { TradePosition, TradeTxRecord } from "./types";
 
@@ -123,6 +126,53 @@ describe("Trade Alerts Lark Formatting", () => {
     assert.ok(slText.startsWith("**"), "Must start with **");
     assert.ok(slText.includes("破位快速止损"));
   });
+
+  it("should format comprehensive trade history and PnL report with ** prefix and bash CA block", () => {
+    const mockPos: TradePosition = {
+      id: "pos-3",
+      tokenAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      symbol: "TEST_DOGE",
+      chain: "bsc",
+      source: "test",
+      entryTime: new Date(Date.now() - 3600000).toISOString(),
+      closeTime: new Date().toISOString(),
+      entryPriceUsd: 0.001,
+      entryPriceNative: 0.05,
+      entryAmountTokens: "10000",
+      initialTokens: "10000",
+      remainingTokens: "0",
+      entryCostNative: 0.05,
+      entryCostUsd: 30,
+      highestPriceUsd: 0.002,
+      highestGainPct: 100,
+      currentPriceUsd: 0.0018,
+      currentGainPct: 80,
+      status: "CLOSED_TP",
+      tp1Done: true,
+      tp2Done: true,
+      txHistory: [],
+      realizedPnlUsd: 25.5,
+      realizedPnlNative: 0.0425,
+    };
+
+    const reportText = formatComprehensiveTradeReport({
+      closedPosition: mockPos,
+      allClosedPositions: [mockPos],
+      activeCount: 1,
+      totalRealizedPnlUsd: 25.5,
+      winTradeCount: 1,
+      lossTradeCount: 0,
+      winRatePct: 100,
+      dryRun: true,
+    });
+
+    assert.ok(reportText.startsWith("**"), "Report must start with **");
+    assert.ok(reportText.includes("【Meme 币交易清仓结项与全量收益战报】"));
+    assert.ok(reportText.includes("```bash\n0xabcdefabcdefabcdefabcdefabcdefabcdefabcd\n```"));
+    assert.ok(reportText.includes("全量累计战绩统计"));
+    assert.ok(reportText.includes("100.0%"));
+    assert.ok(reportText.includes("+$25.50"));
+  });
 });
 
 describe("TradeService Strategy Engine", () => {
@@ -192,14 +242,14 @@ describe("TradeService Strategy Engine", () => {
     assert.equal(buyResult.position.symbol, "TEST_DOGE");
 
     const state = service.getState();
-    const pos = state.activePositions.find((p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase());
+    const pos = state.activePositions.find((p: TradePosition) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase());
     assert.ok(pos, "Active position exists in state");
 
     const closeResult = await service.manualClosePosition(buyResult.position.id);
     assert.equal(closeResult, true);
 
     const stateAfter = service.getState();
-    const closedPos = stateAfter.closedPositions.find((p) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase());
+    const closedPos = stateAfter.closedPositions.find((p: TradePosition) => p.tokenAddress.toLowerCase() === tokenAddress.toLowerCase());
     assert.ok(closedPos, "Position moved to closed positions");
     assert.equal(closedPos.status, "CLOSED_MANUAL");
   });

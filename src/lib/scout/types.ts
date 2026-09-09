@@ -375,6 +375,7 @@ export type TradeConfig = {
   maxHoldTimeMinutes: number; // default: 360 (6 hours)
   emergencyLiquidityDrainPct: number; // default: 35%
   larkTradeNotification: boolean;
+  webhookUrl?: string;
   walletAddress?: string;
   hasBscKey: boolean;
   hasRhKey: boolean;

@@ -1140,6 +1140,171 @@ export async function sendLarkTradeAlert(
     };
   } catch (err: any) {
     return {
+        ok: false,
+      error: err?.message || String(err),
+      timestamp,
+    };
+  }
+}
+
+/**
+ * Format comprehensive trade history and PnL performance report for Lark.
+ * Strictly starts with ** and wraps contract address in bash codeblock.
+ */
+export function formatComprehensiveTradeReport(params: {
+  closedPosition: TradePosition;
+  allClosedPositions: TradePosition[];
+  activeCount: number;
+  totalRealizedPnlUsd: number;
+  winTradeCount: number;
+  lossTradeCount: number;
+  winRatePct: number;
+  dryRun: boolean;
+}): string {
+  const {
+    closedPosition: p,
+    allClosedPositions,
+    activeCount,
+    totalRealizedPnlUsd,
+    winTradeCount,
+    lossTradeCount,
+    winRatePct,
+    dryRun,
+  } = params;
+
+  const modeBadge = dryRun ? "🛡️【模拟实盘 (Paper Trading)】" : "🚀【真实链上 (Live Trading)】";
+  const chainName =
+    p.chain.toLowerCase() === "bsc" ? "BNB Smart Chain (BSC)" : "Robinhood Chain";
+
+  const entryMs = new Date(p.entryTime).getTime();
+  const closeMs = p.closeTime ? new Date(p.closeTime).getTime() : Date.now();
+  const holdMin = Math.max(1, Math.round((closeMs - entryMs) / 60000));
+  const holdStr = holdMin < 60 ? `${holdMin} 分钟` : `${(holdMin / 60).toFixed(1)} 小时`;
+
+  const reasonMap: Record<string, string> = {
+    CLOSED_TP: "🎯 阶梯止盈清仓达成 (TP1+TP2+TP3)",
+    CLOSED_SL: "🛑 破位快速止损 (-18% 坚决避险)",
+    CLOSED_TIMEOUT: "⏱️ 6小时持仓超时强平 (释放流动性)",
+    CLOSED_MANUAL: "🖐️ 人工手动市价清仓",
+    LIQUIDITY_DRAIN: "🚨 池子流动性断崖清仓 (防撤池/Rug)",
+  };
+  const closeReason = reasonMap[p.status] || p.status || "平仓结项";
+
+  const isPos = (p.realizedPnlUsd || 0) >= 0;
+  const pnlSign = isPos ? "+" : "-";
+  const pnlPct =
+    p.entryCostUsd > 0 ? ((p.realizedPnlUsd || 0) / p.entryCostUsd) * 100 : 0;
+
+  const totalClosedCount = winTradeCount + lossTradeCount;
+  const totalPnlSign = totalRealizedPnlUsd >= 0 ? "+" : "-";
+
+  // Build Recent Closed Trades list (up to 12 items)
+  const historyLines = allClosedPositions.slice(0, 12).map((item, idx) => {
+    const itemIsPos = (item.realizedPnlUsd || 0) >= 0;
+    const itemSign = itemIsPos ? "+" : "-";
+    const itemEntryMs = new Date(item.entryTime).getTime();
+    const itemCloseMs = item.closeTime ? new Date(item.closeTime).getTime() : Date.now();
+    const itemMin = Math.max(1, Math.round((itemCloseMs - itemEntryMs) / 60000));
+    const dur = itemMin < 60 ? `${itemMin}m` : `${(itemMin / 60).toFixed(1)}h`;
+    const tag =
+      item.status === "CLOSED_TP"
+        ? "🎯止盈"
+        : item.status === "CLOSED_SL"
+          ? "🛑止损"
+          : item.status === "CLOSED_TIMEOUT"
+            ? "⏱️超时"
+            : "平仓";
+
+    return `${idx + 1}. $${item.symbol} (${item.chain.toUpperCase()}): ${itemSign}$${Math.abs(item.realizedPnlUsd || 0).toFixed(2)} [${tag} · ${dur}]`;
+  });
+
+  return [
+    `** 📊【Meme 币交易清仓结项与全量收益战报】**`,
+    ``,
+    `模式: ${modeBadge}`,
+    `时间: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `🏁 本次清仓结项标的:`,
+    `💎 代币名称: $${p.symbol}${p.name ? ` (${p.name})` : ""}`,
+    `🌐 交易网络: ${chainName}`,
+    `📍 合约地址 (CA):`,
+    `\`\`\`bash`,
+    p.tokenAddress,
+    `\`\`\``,
+    `⏱️ 交易周期: ${p.entryTime.slice(11, 19)} -> ${(p.closeTime || "").slice(11, 19)} (持仓 ${holdStr})`,
+    `🚪 清仓原因: ${closeReason}`,
+    `💵 买入成本: $${p.entryCostUsd.toFixed(2)} (${p.entryCostNative.toFixed(4)} ${p.chain.toLowerCase() === "bsc" ? "BNB" : "ETH"})`,
+    `💰 最终净盈亏: ${isPos ? "🟢 +" : "🔴 -"}$${Math.abs(p.realizedPnlUsd || 0).toFixed(2)} (${pnlSign}${Math.abs(pnlPct).toFixed(1)}%)`,
+    `🎯 分段止盈达成: TP1(+50%): ${p.tp1Done ? "✅ 已锁定" : "未达"} | TP2(+100%): ${p.tp2Done ? "✅ 已锁定" : "未达"}`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `📈 全量累计战绩统计:`,
+    `• 累计平仓总数: ${totalClosedCount} 笔`,
+    `• 综合胜率: ${winRatePct.toFixed(1)}% (${winTradeCount} 胜 / ${lossTradeCount} 负)`,
+    `• 累计实现净盈亏: ${totalPnlSign}$${Math.abs(totalRealizedPnlUsd).toFixed(2)} USD`,
+    `• 当前在持仓位: ${activeCount} 个标的`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `📜 近期历史平仓明细 (近 ${historyLines.length} 笔):`,
+    ...(historyLines.length > 0 ? historyLines : ["(暂无其他历史平仓记录)"]),
+    ``,
+    `💡 提示: 点击代码块右上角可一键复制合约地址；登录系统大盘可查看实时策略配置与图表。`,
+  ].join("\n");
+}
+
+/**
+ * Send Comprehensive Trade History & PnL Report to Lark.
+ */
+export async function sendLarkComprehensiveTradeReport(
+  params: {
+    closedPosition: TradePosition;
+    allClosedPositions: TradePosition[];
+    activeCount: number;
+    totalRealizedPnlUsd: number;
+    winTradeCount: number;
+    lossTradeCount: number;
+    winRatePct: number;
+    dryRun: boolean;
+    webhookUrl?: string;
+  },
+): Promise<LarkSendResult> {
+  const webhookUrl = params.webhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatComprehensiveTradeReport(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        msg_type: "text",
+        content: {
+          text,
+        },
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return {
+        ok: true,
+        code: 0,
+        msg: "success",
+        timestamp,
+      };
+    }
+
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return {
       ok: false,
       error: err?.message || String(err),
       timestamp,

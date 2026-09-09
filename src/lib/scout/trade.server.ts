@@ -23,7 +23,10 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { bsc } from "viem/chains";
-import { sendLarkTradeAlert } from "./lark";
+import {
+  sendLarkComprehensiveTradeReport,
+  sendLarkTradeAlert,
+} from "./lark";
 import type {
   TradeConfig,
   TradePosition,
@@ -79,7 +82,7 @@ export class TradeService {
 
   private config: TradeConfig = {
     dryRun: true, // Default to true (Safe Simulation Mode)
-    autoBuyEnabled: false, // Default false until user enables
+    autoBuyEnabled: true, // Default true for automated paper trading on alerts
     buyAmountBscBnb: 0.05, // Default 0.05 BNB (~$30)
     buyAmountRhEth: 0.005, // Default 0.005 ETH (~$15)
     maxPriceDeviationPct: 10, // Max 10% price pump before order fills
@@ -116,7 +119,7 @@ export class TradeService {
   private bscBnbBalance: number = 0;
   private rhEthBalance: number = 0;
 
-  private constructor() {
+  public constructor() {
     this.initWalletConfig();
     this.loadFromStorage();
     this.start();
@@ -762,6 +765,24 @@ export class TradeService {
     console.log(
       `[TradeService] 🏁 仓位平仓归档: $${pos.symbol} (${pos.chain}), 最终实现盈亏: $${pos.realizedPnlUsd.toFixed(2)}`,
     );
+
+    // Send Comprehensive Trade History & PnL Report to Lark
+    if (this.config.larkTradeNotification) {
+      const state = this.getState();
+      sendLarkComprehensiveTradeReport({
+        closedPosition: pos,
+        allClosedPositions: state.closedPositions,
+        activeCount: state.activePositions.length,
+        totalRealizedPnlUsd: state.totalRealizedPnlUsd,
+        winTradeCount: state.winTradeCount,
+        lossTradeCount: state.lossTradeCount,
+        winRatePct: state.winRatePct,
+        dryRun: this.config.dryRun,
+        webhookUrl: this.config.webhookUrl,
+      }).catch((err) => {
+        console.warn("[TradeService] 发送全量交易历史战报失败:", err?.message || err);
+      });
+    }
   }
 
   /**
