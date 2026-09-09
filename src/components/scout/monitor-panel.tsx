@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Bell,
   CheckCircle2,
+  Clock,
   Copy,
   ExternalLink,
   Flame,
@@ -16,7 +18,9 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  Target,
   Trash2,
+  TrendingDown,
   TrendingUp,
   XCircle,
   Zap,
@@ -26,13 +30,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   addTgChannel,
+  getBacktestStatus,
   getMonitorStatus,
   getTgMonitorStatus,
   removeTgChannel,
   sendTestLarkAlarm,
   toggleTgChannel,
+  triggerDailyBacktest,
+  triggerHourlyBacktest,
   triggerMonitorScan,
   triggerTgPoll,
+  updateBacktestConfig,
   updateMonitorConfig,
   updateTgMonitorConfig,
 } from "@/lib/scout/actions";
@@ -46,7 +54,7 @@ export function MonitorPanel({
   onInspect?: (address: string) => void;
 }) {
   const qc = useQueryClient();
-  const [subTab, setSubTab] = useState<"robinhood" | "telegram">("telegram");
+  const [subTab, setSubTab] = useState<"telegram" | "robinhood" | "backtest">("telegram");
 
   // --- Robinhood Monitor Data ---
   const { data: status } = useQuery({
@@ -60,6 +68,49 @@ export function MonitorPanel({
     queryKey: ["tgMonitorStatus"],
     queryFn: () => getTgMonitorStatus(),
     refetchInterval: 6000,
+  });
+
+  // --- Backtest Data ---
+  const { data: backtestStatus } = useQuery({
+    queryKey: ["backtestStatus"],
+    queryFn: () => getBacktestStatus(),
+    refetchInterval: 6000,
+  });
+
+  const [backtestView, setBacktestView] = useState<"tokens" | "reports">("tokens");
+
+  const hourlyBacktestMutation = useMutation({
+    mutationFn: () => triggerHourlyBacktest({ data: { force: true } }),
+    onSuccess: (report) => {
+      qc.invalidateQueries({ queryKey: ["backtestStatus"] });
+      toast.success(
+        `1小时回测完成: 统计 ${report.summary.totalTokens} 个标的，止盈胜率 ${report.summary.winRatePct.toFixed(1)}%！${report.larkOk ? "（战报已推送飞书）" : ""}`,
+      );
+    },
+    onError: (err: any) => {
+      toast.error(`1小时回测失败: ${err?.message || String(err)}`);
+    },
+  });
+
+  const dailyBacktestMutation = useMutation({
+    mutationFn: () => triggerDailyBacktest({ data: { force: true } }),
+    onSuccess: (report) => {
+      qc.invalidateQueries({ queryKey: ["backtestStatus"] });
+      toast.success(
+        `24小时大盘复盘完成: 统计 ${report.summary.totalTokens} 个标的，止盈胜率 ${report.summary.winRatePct.toFixed(1)}%，翻倍率 ${((report.summary.doubledTokens / (report.summary.totalTokens || 1)) * 100).toFixed(1)}%！${report.larkOk ? "（战报已推送飞书）" : ""}`,
+      );
+    },
+    onError: (err: any) => {
+      toast.error(`24小时复盘失败: ${err?.message || String(err)}`);
+    },
+  });
+
+  const updateBacktestCfgMutation = useMutation({
+    mutationFn: (newCfg: any) => updateBacktestConfig({ data: newCfg }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["backtestStatus"] });
+      toast.success("回测配置已更新！");
+    },
   });
 
   // Robinhood config states
@@ -226,6 +277,23 @@ export function MonitorPanel({
               {rhHistory.length} 告警
             </Badge>
           )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubTab("backtest")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors",
+            subTab === "backtest"
+              ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+              : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+          )}
+        >
+          <BarChart3 className="size-4" />
+          <span>战绩回顾与收益回测 (1h / 24h)</span>
+          <Badge variant="outline" className="text-xs">
+            {backtestStatus?.trackedTokensCount ?? 0} 标的
+          </Badge>
         </button>
       </div>
 
@@ -1177,6 +1245,473 @@ export function MonitorPanel({
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* BACKTEST & WIN-RATE TRACKING TAB CONTENT */}
+      {/* ========================================================================= */}
+      {subTab === "backtest" && (
+        <div className="flex flex-col gap-6">
+          {/* Top Summary Cards */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {/* Card 1: Win Rate & Profit Multiples */}
+            <div className="flex flex-col justify-between rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Target className="size-4 text-amber-400" />
+                  <h3 className="font-mono text-sm font-medium">快进快出获利胜率</h3>
+                </div>
+                <Badge variant="outline">Meme 极值统计</Badge>
+              </div>
+
+              {(() => {
+                const tokens = backtestStatus?.trackedTokens ?? [];
+                const total = tokens.length;
+                const tpCount = tokens.filter(
+                  (t) => (t.highestGainPct ?? 0) >= (backtestStatus?.config.takeProfitThresholdPct ?? 30),
+                ).length;
+                const doubleCount = tokens.filter(
+                  (t) => (t.highestGainPct ?? 0) >= 100,
+                ).length;
+                const posCount = tokens.filter(
+                  (t) =>
+                    t.latestPriceUsd != null &&
+                    t.alertPriceUsd != null &&
+                    t.latestPriceUsd > t.alertPriceUsd,
+                ).length;
+                const winRate = total > 0 ? (tpCount / total) * 100 : 0;
+                const doubleRate = total > 0 ? (doubleCount / total) * 100 : 0;
+
+                return (
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded bg-secondary/50 p-2">
+                      <span className="text-muted-foreground">🎯 止盈胜率 (≥+30%)</span>
+                      <p className="font-mono text-base font-bold text-amber-400">
+                        {winRate.toFixed(1)}%
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {tpCount} / {total} 标的达标
+                      </span>
+                    </div>
+                    <div className="rounded bg-secondary/50 p-2">
+                      <span className="text-muted-foreground">🌟 翻倍爆发率 (≥+100%)</span>
+                      <p className="font-mono text-base font-bold text-emerald-400">
+                        {doubleRate.toFixed(1)}%
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {doubleCount} 个代币翻倍
+                      </span>
+                    </div>
+                    <div className="rounded bg-secondary/50 p-2">
+                      <span className="text-muted-foreground">🟢 现价正收益率</span>
+                      <p className="font-mono text-base font-bold text-foreground">
+                        {total > 0 ? ((posCount / total) * 100).toFixed(1) : "0"}%
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {posCount} 涨 / {total - posCount} 跌
+                      </span>
+                    </div>
+                    <div className="rounded bg-secondary/50 p-2">
+                      <span className="text-muted-foreground">📊 已追踪标的</span>
+                      <p className="font-mono text-base font-bold text-foreground">
+                        {total} 个
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        含 Robinhood &amp; TG
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="mt-3 text-[11px] text-muted-foreground font-mono">
+                * 追踪推送后 ATH 峰值涨幅，捕捉土狗脉冲波段获利窗口
+              </div>
+            </div>
+
+            {/* Card 2: Actions & Triggers */}
+            <div className="flex flex-col justify-between rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className="size-4 text-cyan-400" />
+                  <h3 className="font-mono text-sm font-medium">周期回测与飞书推送</h3>
+                </div>
+                <Badge variant={backtestStatus?.config.autoLarkPush ? "go" : "default"}>
+                  {backtestStatus?.config.autoLarkPush ? "战报推送开" : "已暂停"}
+                </Badge>
+              </div>
+
+              <div className="mt-3 space-y-1.5 text-xs text-muted-foreground">
+                <p>
+                  1 小时复盘:{" "}
+                  <strong className="text-foreground">
+                    每小时自动执行 (回顾 1h 前标的)
+                  </strong>
+                </p>
+                <p>
+                  上次 1h 回测:{" "}
+                  <span className="font-mono text-foreground">
+                    {backtestStatus?.lastHourlyCheckTime
+                      ? new Date(backtestStatus.lastHourlyCheckTime).toLocaleTimeString("zh-CN")
+                      : "待触发"}
+                  </span>
+                </p>
+                <p>
+                  上次 24h 复盘:{" "}
+                  <span className="font-mono text-foreground">
+                    {backtestStatus?.lastDailyCheckTime
+                      ? new Date(backtestStatus.lastDailyCheckTime).toLocaleTimeString("zh-CN")
+                      : "待触发"}
+                  </span>
+                </p>
+                <p className="text-[11px] text-cyan-400 font-mono">
+                  * 战报自动以 ** 为标题推送至飞书机器人
+                </p>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => hourlyBacktestMutation.mutate()}
+                  disabled={hourlyBacktestMutation.isPending}
+                >
+                  <RefreshCw
+                    className={cn(
+                      "size-3.5 mr-1",
+                      hourlyBacktestMutation.isPending && "animate-spin",
+                    )}
+                  />
+                  1小时极速回测
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => dailyBacktestMutation.mutate()}
+                  disabled={dailyBacktestMutation.isPending}
+                >
+                  <Send className="size-3.5 mr-1" />
+                  24小时大盘战报
+                </Button>
+              </div>
+            </div>
+
+            {/* Card 3: Disciplines */}
+            <div className="flex flex-col justify-between rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Zap className="size-4 text-yellow-400" />
+                  <h3 className="font-mono text-sm font-medium">土狗快进快出操盘策略</h3>
+                </div>
+                <Badge variant="outline">纪律模型</Badge>
+              </div>
+
+              <div className="mt-3 space-y-2 text-xs">
+                <div className="rounded bg-secondary/50 p-2">
+                  <span className="text-amber-400 font-medium">🎯 第一止盈位 (+30% ~ +50%)</span>
+                  <p className="text-muted-foreground mt-0.5">
+                    脉冲拉升时分批止盈 30%~50%，快速收回本金降低敞口。
+                  </p>
+                </div>
+                <div className="rounded bg-secondary/50 p-2">
+                  <span className="text-emerald-400 font-medium">🌟 翻倍出本位 (+100%)</span>
+                  <p className="text-muted-foreground mt-0.5">
+                    达到 2x 必须卖出 50% 仓位彻底保本，剩余利润零成本博弈高倍。
+                  </p>
+                </div>
+                <div className="rounded bg-secondary/50 p-2">
+                  <span className="text-red-400 font-medium">🔴 铁律止损位 (-15% ~ -20%)</span>
+                  <p className="text-muted-foreground mt-0.5">
+                    跌破开仓成本支撑迅速止损，严禁长持变成死扛归零！
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Tracked Tokens Feed & Report History */}
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Activity className="size-4 text-amber-400" />
+                <h3 className="font-mono text-base font-semibold">
+                  代币价格追踪与胜率表现 ({(backtestStatus?.trackedTokens ?? []).length})
+                </h3>
+              </div>
+
+              <div className="flex items-center gap-1.5 rounded-lg bg-secondary p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setBacktestView("tokens")}
+                  className={cn(
+                    "rounded px-2.5 py-1 transition-colors",
+                    backtestView === "tokens"
+                      ? "bg-card text-foreground font-medium shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  实时代币表现 ({(backtestStatus?.trackedTokens ?? []).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBacktestView("reports")}
+                  className={cn(
+                    "rounded px-2.5 py-1 transition-colors",
+                    backtestView === "reports"
+                      ? "bg-amber-500/20 text-amber-400 font-medium shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  历史飞书战报 ({(backtestStatus?.recentReports ?? []).length})
+                </button>
+              </div>
+            </div>
+
+            {/* View 1: Tracked Tokens List */}
+            {backtestView === "tokens" && (
+              <>
+                {(backtestStatus?.trackedTokens ?? []).length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+                    <p>暂无正在追踪的推送代币。</p>
+                    <p className="mt-1 text-xs">
+                      当 Robinhood 巡检或 Telegram 频道触发新的高潜力告警时，将自动收录并开启 5 分钟极值追踪！
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(backtestStatus?.trackedTokens ?? []).map((token) => {
+                      const curPrice = token.latestPriceUsd;
+                      const alertPrice = token.alertPriceUsd;
+                      const roi =
+                        curPrice && alertPrice && alertPrice > 0
+                          ? ((curPrice - alertPrice) / alertPrice) * 100
+                          : null;
+                      const peak = token.highestGainPct ?? roi;
+
+                      let verdictText = "稳健观察";
+                      let verdictVariant: "go" | "default" | "stop" = "default";
+
+                      if (peak != null && peak >= 200) {
+                        verdictText = "🚀 爆拉 3x+ (超级肉)";
+                        verdictVariant = "go";
+                      } else if (peak != null && peak >= 100) {
+                        verdictText = "🌟 翻倍 2x (大幅止盈)";
+                        verdictVariant = "go";
+                      } else if (peak != null && peak >= 30) {
+                        verdictText = "🎯 达成止盈 (波段成功)";
+                        verdictVariant = "go";
+                      } else if (roi != null && roi < -25) {
+                        verdictText = "🔴 跌破支撑 (触发止损)";
+                        verdictVariant = "stop";
+                      } else if (peak != null && peak >= 15 && (roi ?? 0) < 0) {
+                        verdictText = "📉 冲高回落";
+                        verdictVariant = "default";
+                      }
+
+                      return (
+                        <div
+                          key={token.id}
+                          className="flex flex-col gap-3 rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)] transition-all hover:bg-card/80"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h4 className="font-mono text-base font-bold text-foreground">
+                                ${token.symbol}
+                              </h4>
+                              {token.name && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({token.name})
+                                </span>
+                              )}
+                              <Badge variant="outline" className="font-mono text-xs">
+                                ⛓️ {token.chain}
+                              </Badge>
+                              <Badge variant={verdictVariant}>{verdictText}</Badge>
+                              <Badge variant="outline" className="font-mono text-xs">
+                                得分: {token.score}
+                              </Badge>
+                            </div>
+
+                            <div className="flex items-center gap-2 text-xs font-mono text-muted-foreground">
+                              <span>来源: {token.source === "telegram-channel" ? `TG @${token.channel || "频道"}` : "Robinhood 链上"}</span>
+                              <span>
+                                {new Date(token.alertTimestamp).toLocaleTimeString("zh-CN")}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+                            <div>
+                              <span className="text-muted-foreground">推送价:</span>
+                              <p className="font-mono font-bold text-foreground">
+                                {alertPrice != null
+                                  ? alertPrice < 0.0001
+                                    ? `$${alertPrice.toExponential(3)}`
+                                    : `$${alertPrice.toFixed(6)}`
+                                  : "—"}
+                              </p>
+                            </div>
+
+                            <div>
+                              <span className="text-muted-foreground">当前现价:</span>
+                              <p className="font-mono font-bold text-foreground">
+                                {curPrice != null
+                                  ? curPrice < 0.0001
+                                    ? `$${curPrice.toExponential(3)}`
+                                    : `$${curPrice.toFixed(6)}`
+                                  : "—"}{" "}
+                                {roi != null && (
+                                  <span
+                                    className={cn(
+                                      "font-mono",
+                                      roi >= 0 ? "text-emerald-400" : "text-red-400",
+                                    )}
+                                  >
+                                    ({roi >= 0 ? "+" : ""}
+                                    {roi.toFixed(1)}%)
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+
+                            <div>
+                              <span className="text-muted-foreground">🚀 期间最高涨幅 (ATH):</span>
+                              <p className="font-mono font-bold text-amber-400">
+                                {token.highestGainPct != null
+                                  ? `+${token.highestGainPct.toFixed(1)}%`
+                                  : "—"}{" "}
+                                {token.highestPriceUsd != null && (
+                                  <span className="text-xs text-muted-foreground font-normal">
+                                    (${token.highestPriceUsd < 0.0001 ? token.highestPriceUsd.toExponential(2) : token.highestPriceUsd.toFixed(4)})
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+
+                            <div>
+                              <span className="text-muted-foreground">合约地址 (CA):</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void navigator.clipboard.writeText(token.tokenAddress);
+                                  toast.success("合约地址已复制到剪贴板！");
+                                }}
+                                className="flex items-center gap-1 font-mono text-cyan-400 hover:underline"
+                                title="点击一键复制"
+                              >
+                                {shortAddr(token.tokenAddress)}
+                                <Copy className="size-3" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => onInspect?.(token.tokenAddress)}
+                            >
+                              <Radio className="size-3.5" />
+                              验合约
+                            </Button>
+                            <Button size="sm" variant="ghost" asChild>
+                              <a
+                                href={`https://dexscreener.com/search?q=${token.tokenAddress}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="gap-1"
+                              >
+                                <ExternalLink className="size-3.5" />
+                                DexScreener 实时K线
+                              </a>
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* View 2: Reports History */}
+            {backtestView === "reports" && (
+              <>
+                {(backtestStatus?.recentReports ?? []).length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+                    <p>暂无生成的飞书战报记录。</p>
+                    <p className="mt-1 text-xs">
+                      点击上方「1小时极速回测」或「24小时大盘战报」按钮立即生成！
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(backtestStatus?.recentReports ?? []).map((rep) => (
+                      <div
+                        key={rep.id}
+                        className="flex flex-col gap-3 rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2">
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant={rep.interval === "1h" ? "outline" : "default"}
+                              className="font-mono text-xs"
+                            >
+                              {rep.interval === "1h" ? "⏱️ 1小时战报" : "📅 24小时大盘"}
+                            </Badge>
+                            <span className="text-xs font-mono text-muted-foreground">
+                              {new Date(rep.timestamp).toLocaleString("zh-CN")}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <Badge variant={rep.larkOk ? "go" : "stop"}>
+                              {rep.larkOk ? (
+                                <CheckCircle2 className="mr-1 size-3" />
+                              ) : (
+                                <XCircle className="mr-1 size-3" />
+                              )}
+                              飞书: {rep.larkOk ? "已送达" : "未成功"}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+                          <div>
+                            <span className="text-muted-foreground">统计标的:</span>
+                            <p className="font-mono font-bold text-foreground">
+                              {rep.summary.totalTokens} 个
+                            </p>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">止盈胜率 (≥+30%):</span>
+                            <p className="font-mono font-bold text-amber-400">
+                              {rep.summary.winRatePct.toFixed(1)}% ({rep.summary.takeProfitTokens} 个)
+                            </p>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">翻倍爆发率 (≥+100%):</span>
+                            <p className="font-mono font-bold text-emerald-400">
+                              {rep.summary.doubledTokens} 个标的
+                            </p>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">平均涨跌:</span>
+                            <p className="font-mono font-bold text-foreground">
+                              {rep.summary.avgChangePct >= 0 ? "+" : ""}
+                              {rep.summary.avgChangePct.toFixed(1)}%
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
