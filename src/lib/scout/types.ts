@@ -255,3 +255,106 @@ export type TgMonitorState = {
   history: TgAlarmRecord[];
 };
 
+export type TrackedAlertToken = {
+  id: string;
+  tokenAddress: string;
+  symbol: string;
+  name?: string;
+  chain: string;
+  source: "robinhood-scanner" | "telegram-channel";
+  channel?: string;
+  score: number;
+  tier: string;
+  alertTimestamp: string;
+  alertPriceUsd: number | null;
+  alertMcapUsd?: number | null;
+  alertLiquidityUsd?: number | null;
+
+  // Real-time tracking
+  latestPriceUsd: number | null;
+  latestCheckTime?: string;
+  highestPriceUsd: number | null;
+  highestGainPct: number | null; // e.g. +150.5%
+  lowestPriceUsd: number | null;
+  lowestChangePct: number | null; // e.g. -25.0%
+
+  // Checkpoints
+  review1hDone?: boolean;
+  price1hUsd?: number | null;
+  change1hPct?: number | null;
+
+  review24hDone?: boolean;
+  price24hUsd?: number | null;
+  change24hPct?: number | null;
+};
+
+export type BacktestReportItem = {
+  tokenAddress: string;
+  symbol: string;
+  chain: string;
+  source: string;
+  score: number;
+  alertTimestamp: string;
+  alertPriceUsd: number | null;
+  reviewTimestamp: string;
+  reviewPriceUsd: number | null;
+  priceChangePct: number | null;
+  highestPriceUsd: number | null;
+  highestGainPct: number | null;
+  verdict:
+    | "PUMP_3X"
+    | "PUMP_2X"
+    | "PROFIT_TAKE"
+    | "MODEST_GAIN"
+    | "PULLBACK"
+    | "DUMP_LOSS";
+  statusText: string;
+};
+
+export type BacktestSummary = {
+  interval: "1h" | "24h";
+  totalTokens: number;
+  positiveTokens: number;
+  takeProfitTokens: number; // >= +30%
+  doubledTokens: number; // >= +100%
+  lossTokens: number; // < 0%
+  winRatePct: number; // takeProfit / total * 100
+  netPositiveRatePct: number; // positive / total * 100
+  avgChangePct: number;
+  maxGainPct: number;
+  mvpSymbol?: string;
+  mvpGainPct?: number;
+};
+
+export type BacktestReport = {
+  id: string;
+  interval: "1h" | "24h";
+  timestamp: string;
+  summary: BacktestSummary;
+  items: BacktestReportItem[];
+  larkOk: boolean;
+  larkMsg?: string;
+};
+
+export type BacktestConfig = {
+  enabled: boolean;
+  hourlyCheckEnabled: boolean;
+  dailyCheckEnabled: boolean;
+  priceTrackIntervalMinutes: number; // default: 5
+  takeProfitThresholdPct: number; // default: 30 (>= +30% is a win)
+  autoLarkPush: boolean;
+  webhookUrl: string;
+};
+
+export type BacktestState = {
+  isRunning: boolean;
+  config: BacktestConfig;
+  trackedTokensCount: number;
+  lastHourlyCheckTime: string | null;
+  lastDailyCheckTime: string | null;
+  lastPriceTrackTime: string | null;
+  recentReports: BacktestReport[];
+  trackedTokens: TrackedAlertToken[];
+};
+
+
