@@ -1,4 +1,4 @@
-import type { Candidate, TgTokenEvaluation } from "./types";
+import type { BacktestReport, Candidate, TgTokenEvaluation } from "./types";
 import type { MemeIndicators } from "./indicators";
 
 export const DEFAULT_LARK_WEBHOOK_URL =
@@ -871,4 +871,152 @@ export async function sendLarkTgAlarm(
     };
   }
 }
+
+/**
+ * Format Backtest Report into Lark text format.
+ * CRITICAL REQUIREMENT: Must strictly begin with prefix: **
+ */
+export function formatBacktestReportText(report: BacktestReport): string {
+  const { summary, items } = report;
+  const is1h = report.interval === "1h";
+  const title = is1h
+    ? "** ⏱️【Robinhood Meme 雷达 · 1小时极速胜率战报】**"
+    : "** 📅【Robinhood Meme 雷达 · 24小时大盘复盘战报】**";
+
+  const timeStr = new Date(report.timestamp).toLocaleString("zh-CN");
+  const winRateColor = summary.winRatePct >= 50 ? "🟢" : "🟡";
+  const avgChangeColor = summary.avgChangePct >= 0 ? "🟢" : "🔴";
+
+  let out = `${title}
+
+📊【本期回测统计概览】:
+• 复盘周期: ${is1h ? "过去 1 小时内推送代币" : "过去 24 小时内全部推送代币"}
+• 统计时间: ${timeStr}
+• 追踪标的数: ${summary.totalTokens} 个
+• ${winRateColor} 止盈胜率 (最高≥+30%): ${summary.winRatePct.toFixed(1)}% (${summary.takeProfitTokens}/${summary.totalTokens})
+• 🌟 翻倍率 (最高≥+100%): ${summary.totalTokens > 0 ? ((summary.doubledTokens / summary.totalTokens) * 100).toFixed(1) : 0}% (${summary.doubledTokens} 个)
+• 🟢 现价留存正收益率: ${summary.netPositiveRatePct.toFixed(1)}% (${summary.positiveTokens} 涨 / ${summary.lossTokens} 跌)
+• ${avgChangeColor} 现价平均涨跌幅: ${summary.avgChangePct >= 0 ? "+" : ""}${summary.avgChangePct.toFixed(1)}%
+• 🔥 最佳爆发 (MVP): ${summary.mvpSymbol ? `$${summary.mvpSymbol} (最高 +${summary.mvpGainPct?.toFixed(1)}%)` : "暂无"}
+━━━━━━━━━━━━━━━━━━━
+`;
+
+  if (items.length === 0) {
+    out += `\n💡 提示: 本周期内暂无符合回测时间条件的推送代币。\n`;
+  } else {
+    out += `\n📋【代币价格表现明细清单 (${items.length}个)】:\n`;
+    items.forEach((item, idx) => {
+      const alertTime = new Date(item.alertTimestamp).toLocaleTimeString("zh-CN");
+      const reviewTime = new Date(item.reviewTimestamp).toLocaleTimeString("zh-CN");
+
+      const alertPriceStr =
+        item.alertPriceUsd != null
+          ? item.alertPriceUsd < 0.0001
+            ? `$${item.alertPriceUsd.toExponential(3)}`
+            : `$${item.alertPriceUsd.toFixed(6)}`
+          : "未知";
+
+      const reviewPriceStr =
+        item.reviewPriceUsd != null
+          ? item.reviewPriceUsd < 0.0001
+            ? `$${item.reviewPriceUsd.toExponential(3)}`
+            : `$${item.reviewPriceUsd.toFixed(6)}`
+          : "未知";
+
+      const curChangeStr =
+        item.priceChangePct != null
+          ? `${item.priceChangePct >= 0 ? "+" : ""}${item.priceChangePct.toFixed(1)}%`
+          : "待更新";
+
+      const peakStr =
+        item.highestGainPct != null
+          ? `+${item.highestGainPct.toFixed(1)}%`
+          : "—";
+
+      let statusBadge = "📊 观察中";
+      if (item.highestGainPct != null && item.highestGainPct >= 200) {
+        statusBadge = "🚀 爆拉 3x+ (超级肉)";
+      } else if (item.highestGainPct != null && item.highestGainPct >= 100) {
+        statusBadge = "🌟 翻倍 2x (大幅止盈)";
+      } else if (item.highestGainPct != null && item.highestGainPct >= 30) {
+        statusBadge = "🎯 达成止盈 (波段盈利)";
+      } else if (item.priceChangePct != null && item.priceChangePct < -30) {
+        statusBadge = "🔴 跌破支撑 (注意止损)";
+      }
+
+      out += `
+【${idx + 1}】$${item.symbol} (${item.chain}) · 得分: ${item.score}
+• 战果评定: ${statusBadge}
+• 推送: ${alertTime} @ ${alertPriceStr}
+• 当前: ${reviewTime} @ ${reviewPriceStr}
+• 现价收益: ${curChangeStr} | 🚀 期间最高: ${peakStr}
+• 合约地址 (独立代码块 / 点击快速复制):
+\`\`\`bash
+${item.tokenAddress}
+\`\`\`
+• 实时行情: https://dexscreener.com/search?q=${item.tokenAddress}
+`;
+    });
+  }
+
+  out += `
+━━━━━━━━━━━━━━━━━━━
+💡【快进快出操盘纪律】:
+1. Meme币高波动，拉升 ≥+30% ~ +50% 建议分批卖出本金 (翻倍必出本)；
+2. 跌破成本 -15% ~ -20% 果断止损，绝不止损变套牢；
+3. 不与任何 Meme 币谈恋爱，只做确定性脉冲波段！`;
+
+  return out;
+}
+
+/**
+ * Send Backtest report directly to Lark Webhook bot.
+ */
+export async function sendLarkBacktestReport(
+  report: BacktestReport,
+  customWebhookUrl?: string,
+): Promise<LarkSendResult> {
+  const webhookUrl = customWebhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatBacktestReportText(report);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        msg_type: "text",
+        content: {
+          text,
+        },
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return {
+        ok: true,
+        code: 0,
+        msg: "success",
+        timestamp,
+      };
+    }
+
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      timestamp,
+    };
+  }
+}
+
 
