@@ -1,4 +1,10 @@
-import type { BacktestReport, Candidate, TgTokenEvaluation } from "./types";
+import type {
+  BacktestReport,
+  Candidate,
+  TgTokenEvaluation,
+  TradePosition,
+  TradeTxRecord,
+} from "./types";
 import type { MemeIndicators } from "./indicators";
 
 export const DEFAULT_LARK_WEBHOOK_URL =
@@ -1018,5 +1024,128 @@ export async function sendLarkBacktestReport(
     };
   }
 }
+
+/**
+ * Format automated trade execution into Lark text.
+ * CRITICAL REQUIREMENT: Must strictly begin with prefix: **
+ */
+export function formatTradeAlertText(params: {
+  type: TradeTxRecord["type"];
+  position: TradePosition;
+  tx: TradeTxRecord;
+  dryRun: boolean;
+  note?: string;
+}): string {
+  const { type, position, tx, dryRun, note } = params;
+  const isBuy = type === "BUY";
+  const chainName =
+    position.chain.toLowerCase() === "bsc" ? "BNB Smart Chain (BSC)" : "Robinhood Chain";
+
+  const modeBadge = dryRun ? "🛡️【模拟实盘 (Dry-Run)】" : "🚀【真实上链 (Live)】";
+
+  let actionTitle = "⚡ 交易执行";
+  if (type === "BUY") actionTitle = "🟢【买入建仓成功】";
+  else if (type === "SELL_TP1") actionTitle = "🎯【第一止盈达成 · 卖出 50%】";
+  else if (type === "SELL_TP2") actionTitle = "🌟【翻倍止盈达成 · 卖出 25%】";
+  else if (type === "SELL_TRAILING") actionTitle = "📉【移动追踪止盈 · 全额清仓】";
+  else if (type === "SELL_SL") actionTitle = "🔴【破位快速止损 · 全额清仓避险】";
+  else if (type === "SELL_TIMEOUT") actionTitle = "⏱️【持仓超时清仓 · 释放流动性】";
+  else if (type === "SELL_MANUAL") actionTitle = "🖐️【手动一键清仓完成】";
+
+  const priceStr =
+    tx.priceUsd < 0.0001
+      ? `$${tx.priceUsd.toExponential(3)}`
+      : `$${tx.priceUsd.toFixed(6)}`;
+
+  let pnlSection = "";
+  if (!isBuy && tx.pnlPct != null) {
+    const pnlColor = tx.pnlPct >= 0 ? "🟢" : "🔴";
+    const pnlSign = tx.pnlPct >= 0 ? "+" : "";
+    pnlSection = `
+• 本次盈亏: ${pnlColor} ${pnlSign}${tx.pnlPct.toFixed(1)}% (${pnlSign}$${(tx.pnlUsd ?? 0).toFixed(2)})
+• 累计已实现盈亏: $${position.realizedPnlUsd.toFixed(2)}
+• 期间最高触及 (ATH): +${position.highestGainPct.toFixed(1)}%`;
+  }
+
+  return `** ⚡【Meme 自动交易与持仓风控执行提醒】⚡
+
+${modeBadge} ${actionTitle}
+💎 代币标的: $${position.symbol} ${position.name ? `(${position.name})` : ""}
+⛓️ 公链网络: ${chainName}
+━━━━━━━━━━━━━━━━━━━
+📋【合约地址 CA - 独立代码块 / 点击快速复制】:
+\`\`\`bash
+${position.tokenAddress}
+\`\`\`
+━━━━━━━━━━━━━━━━━━━
+📊 订单执行明细:
+• 操作类型: ${type}
+• 执行时间: ${new Date(tx.timestamp).toLocaleString("zh-CN")}
+• 成交价格: ${priceStr}
+• 订单花费/卖出: ${tx.amountIn}
+• 订单获得: ${tx.amountOut}${pnlSection}
+• 剩余代币持仓: ${position.remainingTokens} ${position.symbol}
+${note ? `• 触发原因: ${note}\n` : ""}${tx.txHash ? `• 链上哈希: ${tx.txHash}\n` : ""}
+━━━━━━━━━━━━━━━━━━━
+🔗 实时行情查阅: https://dexscreener.com/search?q=${position.tokenAddress}
+💡 纪律提示: 执行既定策略，不掺杂主观情绪，快速止盈，果断止损！`;
+}
+
+/**
+ * Send automated trade alert to Lark.
+ */
+export async function sendLarkTradeAlert(
+  params: {
+    type: TradeTxRecord["type"];
+    position: TradePosition;
+    tx: TradeTxRecord;
+    dryRun: boolean;
+    note?: string;
+  },
+  customWebhookUrl?: string,
+): Promise<LarkSendResult> {
+  const webhookUrl = customWebhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatTradeAlertText(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        msg_type: "text",
+        content: {
+          text,
+        },
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return {
+        ok: true,
+        code: 0,
+        msg: "success",
+        timestamp,
+      };
+    }
+
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      timestamp,
+    };
+  }
+}
+
 
 
