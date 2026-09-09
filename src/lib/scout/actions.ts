@@ -183,4 +183,72 @@ export const updateBacktestConfig = createServerFn({ method: "POST" })
     return backtestEngine.updateConfig(data);
   });
 
+export const getTradeState = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { tradeService } = await import("./trade.server");
+    return tradeService.getState();
+  },
+);
+
+export const updateTradeConfig = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      dryRun?: boolean;
+      autoBuyEnabled?: boolean;
+      buyAmountBscBnb?: number;
+      buyAmountRhEth?: number;
+      maxPriceDeviationPct?: number;
+      executionTimeoutSeconds?: number;
+      slippagePct?: number;
+      gasMultiplier?: number;
+      tp1Pct?: number;
+      tp1SellRatioPct?: number;
+      tp2Pct?: number;
+      tp2SellRatioPct?: number;
+      tp3TrailingStopPct?: number;
+      stopLossPct?: number;
+      maxHoldTimeMinutes?: number;
+      emergencyLiquidityDrainPct?: number;
+      larkTradeNotification?: boolean;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { tradeService } = await import("./trade.server");
+    return tradeService.updateConfig(data);
+  });
+
+export const executeManualBuy = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      tokenAddress: string;
+      symbol: string;
+      name?: string;
+      chain: "bsc" | "robinhood";
+      amountNative: number;
+      expectedPriceUsd: number;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { tradeService } = await import("./trade.server");
+    return tradeService.executeBuy({
+      ...data,
+      source: "manual-ui",
+    });
+  });
+
+export const closePosition = createServerFn({ method: "POST" })
+  .validator((input: { positionId: string }) => input)
+  .handler(async ({ data }) => {
+    const { tradeService } = await import("./trade.server");
+    return tradeService.manualClosePosition(data.positionId);
+  });
+
+export const closeAllPositions = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const { tradeService } = await import("./trade.server");
+    return tradeService.closeAllPositions();
+  },
+);
+
+
 
