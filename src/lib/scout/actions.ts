@@ -145,3 +145,42 @@ export const toggleTgChannel = createServerFn({ method: "POST" })
     return tgMonitorService.toggleChannel(data.channel, data.enabled);
   });
 
+export const getBacktestStatus = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { backtestEngine } = await import("./backtest.server");
+    return backtestEngine.getState();
+  },
+);
+
+export const triggerHourlyBacktest = createServerFn({ method: "POST" })
+  .validator((input: { force?: boolean } | undefined) => input ?? {})
+  .handler(async ({ data }) => {
+    const { backtestEngine } = await import("./backtest.server");
+    return backtestEngine.runHourlyBacktest(Boolean(data?.force));
+  });
+
+export const triggerDailyBacktest = createServerFn({ method: "POST" })
+  .validator((input: { force?: boolean } | undefined) => input ?? {})
+  .handler(async ({ data }) => {
+    const { backtestEngine } = await import("./backtest.server");
+    return backtestEngine.runDailyBacktest(Boolean(data?.force));
+  });
+
+export const updateBacktestConfig = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      enabled?: boolean;
+      hourlyCheckEnabled?: boolean;
+      dailyCheckEnabled?: boolean;
+      priceTrackIntervalMinutes?: number;
+      takeProfitThresholdPct?: number;
+      autoLarkPush?: boolean;
+      webhookUrl?: string;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { backtestEngine } = await import("./backtest.server");
+    return backtestEngine.updateConfig(data);
+  });
+
+
