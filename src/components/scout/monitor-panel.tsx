@@ -1,16 +1,23 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
   BarChart3,
   Bell,
   CheckCircle2,
   Clock,
   Copy,
+  DollarSign,
   ExternalLink,
   Flame,
+  Layers,
+  Lock,
   MessageSquare,
+  Pause,
+  Play,
   Plus,
   Radio,
   RefreshCw,
@@ -18,10 +25,13 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
   Target,
   Trash2,
   TrendingDown,
   TrendingUp,
+  Unlock,
+  Wallet,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -30,9 +40,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   addTgChannel,
+  closeAllPositions,
+  closePosition,
+  executeManualBuy,
   getBacktestStatus,
   getMonitorStatus,
   getTgMonitorStatus,
+  getTradeState,
   removeTgChannel,
   sendTestLarkAlarm,
   toggleTgChannel,
@@ -43,6 +57,7 @@ import {
   updateBacktestConfig,
   updateMonitorConfig,
   updateTgMonitorConfig,
+  updateTradeConfig,
 } from "@/lib/scout/actions";
 import { formatUsd, shortAddr } from "@/lib/scout/format";
 import { DEFAULT_LARK_WEBHOOK_URL } from "@/lib/scout/lark";
@@ -54,7 +69,7 @@ export function MonitorPanel({
   onInspect?: (address: string) => void;
 }) {
   const qc = useQueryClient();
-  const [subTab, setSubTab] = useState<"telegram" | "robinhood" | "backtest">("telegram");
+  const [subTab, setSubTab] = useState<"telegram" | "robinhood" | "backtest" | "trade">("telegram");
 
   // --- Robinhood Monitor Data ---
   const { data: status } = useQuery({
@@ -230,6 +245,90 @@ export function MonitorPanel({
     },
   });
 
+  // --- Trade Data & Mutations ---
+  const { data: tradeData } = useQuery({
+    queryKey: ["tradeState"],
+    queryFn: () => getTradeState(),
+    refetchInterval: 4000,
+  });
+
+  const [tradeDryRun, setTradeDryRun] = useState<boolean>(true);
+  const [tradeAutoBuy, setTradeAutoBuy] = useState<boolean>(true);
+  const [tradeBuyBnb, setTradeBuyBnb] = useState<number>(0.05);
+  const [tradeBuyEth, setTradeBuyEth] = useState<number>(0.005);
+  const [tradeTimeoutSec, setTradeTimeoutSec] = useState<number>(60);
+  const [tradeMaxDeviation, setTradeMaxDeviation] = useState<number>(10);
+  const [tradeSlippage, setTradeSlippage] = useState<number>(8);
+  const [tradeTp1Pct, setTradeTp1Pct] = useState<number>(50);
+  const [tradeTp1SellRatio, setTradeTp1SellRatio] = useState<number>(50);
+  const [tradeTp2Pct, setTradeTp2Pct] = useState<number>(100);
+  const [tradeTp2SellRatio, setTradeTp2SellRatio] = useState<number>(25);
+  const [tradeTp3Trailing, setTradeTp3Trailing] = useState<number>(25);
+  const [tradeStopLoss, setTradeStopLoss] = useState<number>(-18);
+  const [tradeMaxHoldMinutes, setTradeMaxHoldMinutes] = useState<number>(360);
+  const [tradeLiqDrain, setTradeLiqDrain] = useState<number>(35);
+  const [tradeLarkNotification, setTradeLarkNotification] = useState<boolean>(true);
+  const [tradeConfigInitialized, setTradeConfigInitialized] = useState(false);
+
+  useEffect(() => {
+    if (tradeData?.config && !tradeConfigInitialized) {
+      setTradeDryRun(tradeData.config.dryRun ?? true);
+      setTradeAutoBuy(tradeData.config.autoBuyEnabled ?? true);
+      setTradeBuyBnb(tradeData.config.buyAmountBscBnb ?? 0.05);
+      setTradeBuyEth(tradeData.config.buyAmountRhEth ?? 0.005);
+      setTradeTimeoutSec(tradeData.config.executionTimeoutSeconds ?? 60);
+      setTradeMaxDeviation(tradeData.config.maxPriceDeviationPct ?? 10);
+      setTradeSlippage(tradeData.config.slippagePct ?? 8);
+      setTradeTp1Pct(tradeData.config.tp1Pct ?? 50);
+      setTradeTp1SellRatio(tradeData.config.tp1SellRatioPct ?? 50);
+      setTradeTp2Pct(tradeData.config.tp2Pct ?? 100);
+      setTradeTp2SellRatio(tradeData.config.tp2SellRatioPct ?? 25);
+      setTradeTp3Trailing(tradeData.config.tp3TrailingStopPct ?? 25);
+      setTradeStopLoss(tradeData.config.stopLossPct ?? -18);
+      setTradeMaxHoldMinutes(tradeData.config.maxHoldTimeMinutes ?? 360);
+      setTradeLiqDrain(tradeData.config.emergencyLiquidityDrainPct ?? 35);
+      setTradeLarkNotification(tradeData.config.larkTradeNotification ?? true);
+      setTradeConfigInitialized(true);
+    }
+  }, [tradeData?.config, tradeConfigInitialized]);
+
+  const updateTradeCfgMutation = useMutation({
+    mutationFn: (newCfg: any) => updateTradeConfig({ data: newCfg }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tradeState"] });
+      toast.success("交易与风控策略配置已更新！");
+    },
+    onError: (err: any) => {
+      toast.error(`更新失败: ${err?.message || String(err)}`);
+    },
+  });
+
+  const closePositionMutation = useMutation({
+    mutationFn: (positionId: string) => closePosition({ data: { positionId } }),
+    onSuccess: (ok) => {
+      qc.invalidateQueries({ queryKey: ["tradeState"] });
+      if (ok) {
+        toast.success("平仓操作已执行成功！");
+      } else {
+        toast.error("平仓失败，未找到该仓位或执行未成功");
+      }
+    },
+    onError: (err: any) => {
+      toast.error(`平仓异常: ${err?.message || String(err)}`);
+    },
+  });
+
+  const closeAllMutation = useMutation({
+    mutationFn: () => closeAllPositions(),
+    onSuccess: (closedCount) => {
+      qc.invalidateQueries({ queryKey: ["tradeState"] });
+      toast.success(`全仓清仓操作完成: 共平仓 ${closedCount} 个标的`);
+    },
+    onError: (err: any) => {
+      toast.error(`一键清仓失败: ${err?.message || String(err)}`);
+    },
+  });
+
   const rhHistory = status?.history ?? [];
   const tgHistory = tgStatus?.history ?? [];
   const tgRecentEvals = tgStatus?.recentEvaluations ?? [];
@@ -294,6 +393,29 @@ export function MonitorPanel({
           <Badge variant="outline" className="text-xs">
             {backtestStatus?.trackedTokensCount ?? 0} 标的
           </Badge>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubTab("trade")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors",
+            subTab === "trade"
+              ? "bg-violet-500/15 text-violet-400 border border-violet-500/30"
+              : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+          )}
+        >
+          <Zap className="size-4" />
+          <span>自动交易与持仓风控 (BSC / Robinhood)</span>
+          {(tradeData?.activePositions?.length ?? 0) > 0 ? (
+            <Badge variant="go" className="text-xs">
+              {tradeData?.activePositions?.length} 笔持仓
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-xs">
+              {tradeData?.config?.dryRun ? "模拟盘" : "实盘"}
+            </Badge>
+          )}
         </button>
       </div>
 
@@ -1712,6 +1834,702 @@ export function MonitorPanel({
                   </div>
                 )}
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TRADE & RISK CONTROL TAB CONTENT */}
+      {/* ========================================================================= */}
+      {subTab === "trade" && (
+        <div className="flex flex-col gap-6">
+          {/* Top Status Cards */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {/* Card 1: Trade Engine & Execution Mode */}
+            <div className="flex flex-col justify-between rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Zap className="size-4 text-violet-400" />
+                  <h3 className="font-mono text-sm font-medium">自动交易执行状态</h3>
+                </div>
+                <Badge
+                  variant={tradeData?.config?.dryRun ? "outline" : "go"}
+                  className={tradeData?.config?.dryRun ? "text-cyan-400 border-cyan-500/30" : ""}
+                >
+                  {tradeData?.config?.dryRun ? "模拟操盘 (Paper)" : "链上实盘 (Live)"}
+                </Badge>
+              </div>
+
+              <div className="mt-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">自动开仓策略:</span>
+                  <span
+                    className={cn(
+                      "font-mono font-medium",
+                      tradeData?.config?.autoBuyEnabled ? "text-emerald-400" : "text-amber-400",
+                    )}
+                  >
+                    {tradeData?.config?.autoBuyEnabled ? "● 运行中 (自动跟单)" : "○ 已暂停 (仅人工)"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">飞书交易战报:</span>
+                  <span className="font-mono text-foreground">
+                    {tradeData?.config?.larkTradeNotification ? "已开启实时推送" : "已关闭"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">当前运行持仓:</span>
+                  <span className="font-mono font-bold text-violet-400">
+                    {tradeData?.activePositions?.length ?? 0} 个活动仓位
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Wallet Balances & Gas Funds */}
+            <div className="flex flex-col justify-between rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Wallet className="size-4 text-emerald-400" />
+                  <h3 className="font-mono text-sm font-medium">链上钱包与储备资金</h3>
+                </div>
+                <Badge variant="outline">
+                  {tradeData?.walletAddress ? "已绑定私钥" : "未配私钥 (模拟)"}
+                </Badge>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded bg-secondary/50 p-2">
+                  <span className="text-muted-foreground">BSC 资金 (BNB)</span>
+                  <p className="font-mono text-base font-bold text-yellow-400">
+                    {tradeData?.bscBnbBalance ? Number(tradeData.bscBnbBalance).toFixed(4) : "0.0000"}
+                  </p>
+                  <span className="text-[10px] text-muted-foreground">PancakeSwap v2</span>
+                </div>
+                <div className="rounded bg-secondary/50 p-2">
+                  <span className="text-muted-foreground">Robinhood 资金 (ETH)</span>
+                  <p className="font-mono text-base font-bold text-cyan-400">
+                    {tradeData?.rhEthBalance ? Number(tradeData.rhEthBalance).toFixed(4) : "0.0000"}
+                  </p>
+                  <span className="text-[10px] text-muted-foreground">Pons Swap DEX</span>
+                </div>
+              </div>
+
+              <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>地址:</span>
+                <span className="font-mono text-foreground">
+                  {tradeData?.walletAddress
+                    ? shortAddr(tradeData.walletAddress)
+                    : "本地沙盒模拟账号"}
+                </span>
+              </div>
+            </div>
+
+            {/* Card 3: PnL Performance Summary */}
+            <div className="flex flex-col justify-between rounded-xl bg-card p-4 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="size-4 text-amber-400" />
+                  <h3 className="font-mono text-sm font-medium">累计交易统计</h3>
+                </div>
+                <Badge variant="outline">实战/回测总览</Badge>
+              </div>
+
+              {(() => {
+                const totalPnlUsd = tradeData?.totalRealizedPnlUsd ?? 0;
+                const totalClosed = (tradeData?.winTradeCount ?? 0) + (tradeData?.lossTradeCount ?? 0);
+                const winClosed = tradeData?.winTradeCount ?? 0;
+                const winRate = tradeData?.winRatePct ?? 0;
+
+                return (
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded bg-secondary/50 p-2">
+                      <span className="text-muted-foreground">累计实现盈亏</span>
+                      <p
+                        className={cn(
+                          "font-mono text-base font-bold",
+                          totalPnlUsd >= 0 ? "text-emerald-400" : "text-rose-400",
+                        )}
+                      >
+                        {totalPnlUsd >= 0 ? "+" : ""}${totalPnlUsd.toFixed(2)}
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {totalClosed} 笔已平仓
+                      </span>
+                    </div>
+                    <div className="rounded bg-secondary/50 p-2">
+                      <span className="text-muted-foreground">交易胜率 (PnL &gt; 0)</span>
+                      <p className="font-mono text-base font-bold text-amber-400">
+                        {winRate.toFixed(1)}%
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        {winClosed} 胜 / {totalClosed - winClosed} 负
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* Strategy Parameters Configuration Panel */}
+          <div className="flex flex-col gap-4 rounded-xl bg-card p-5 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 pb-3">
+              <div className="flex items-center gap-2">
+                <Sliders className="size-4 text-violet-400" />
+                <h3 className="font-mono text-base font-medium">策略与风控参数配置</h3>
+                <span className="text-xs text-muted-foreground">
+                  （调整入场单量、阶梯止盈比例、止损线与持仓时效）
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    updateTradeCfgMutation.mutate({
+                      dryRun: tradeDryRun,
+                      autoBuyEnabled: tradeAutoBuy,
+                      buyAmountBscBnb: Number(tradeBuyBnb),
+                      buyAmountRhEth: Number(tradeBuyEth),
+                      executionTimeoutSeconds: Number(tradeTimeoutSec),
+                      maxPriceDeviationPct: Number(tradeMaxDeviation),
+                      slippagePct: Number(tradeSlippage),
+                      tp1Pct: Number(tradeTp1Pct),
+                      tp1SellRatioPct: Number(tradeTp1SellRatio),
+                      tp2Pct: Number(tradeTp2Pct),
+                      tp2SellRatioPct: Number(tradeTp2SellRatio),
+                      tp3TrailingStopPct: Number(tradeTp3Trailing),
+                      stopLossPct: Number(tradeStopLoss),
+                      maxHoldTimeMinutes: Number(tradeMaxHoldMinutes),
+                      emergencyLiquidityDrainPct: Number(tradeLiqDrain),
+                      larkTradeNotification: tradeLarkNotification,
+                    });
+                  }}
+                  disabled={updateTradeCfgMutation.isPending}
+                  className="bg-violet-600 hover:bg-violet-500 text-white"
+                >
+                  <ShieldCheck className="size-3.5 mr-1" />
+                  {updateTradeCfgMutation.isPending ? "保存中..." : "保存并应用策略"}
+                </Button>
+              </div>
+            </div>
+
+            {/* Mode & Switches */}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3 rounded-lg border border-border/40 bg-secondary/20 p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tradeDryRun}
+                  onChange={(e) => setTradeDryRun(e.target.checked)}
+                  className="mt-1 size-4 rounded border-border"
+                />
+                <div>
+                  <span className="font-mono text-sm font-medium text-cyan-400">
+                    模拟沙盒操盘模式 (Dry-Run)
+                  </span>
+                  <p className="text-xs text-muted-foreground">
+                    勾选后不消耗真实代币与私钥，按链上实时报价在本地精确模拟下单与撮合；取消勾选将发起真实链上交易。
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tradeAutoBuy}
+                  onChange={(e) => setTradeAutoBuy(e.target.checked)}
+                  className="mt-1 size-4 rounded border-border"
+                />
+                <div>
+                  <span className="font-mono text-sm font-medium text-emerald-400">
+                    自动跟单开仓 (Auto-Buy)
+                  </span>
+                  <p className="text-xs text-muted-foreground">
+                    勾选后当 Telegram / Robinhood 雷达监测到符合高分条件的 Meme 币时，自动按预设仓位执行买入。
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tradeLarkNotification}
+                  onChange={(e) => setTradeLarkNotification(e.target.checked)}
+                  className="mt-1 size-4 rounded border-border"
+                />
+                <div>
+                  <span className="font-mono text-sm font-medium text-amber-400">
+                    飞书/Lark 交易战报推送
+                  </span>
+                  <p className="text-xs text-muted-foreground">
+                    买入成交、阶梯分批止盈、快速止损或超时强平清仓时，即时向飞书机器人推送详细战报。
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            {/* Parameter Fields Grid */}
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+              {/* Group A: Entry Ticket & Slippage */}
+              <div className="space-y-4 rounded-lg border border-border/40 p-4">
+                <div className="flex items-center gap-2 font-mono text-sm font-semibold text-yellow-400">
+                  <DollarSign className="size-4" />
+                  <span>单笔买入与滑点控制</span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">BSC 单笔买入金额 (BNB)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={tradeBuyBnb}
+                    onChange={(e) => setTradeBuyBnb(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                  />
+                  <span className="text-[10px] text-muted-foreground">建议 0.05 BNB (~$30) 稳健试仓</span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">Robinhood 单笔买入金额 (ETH)</label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={tradeBuyEth}
+                    onChange={(e) => setTradeBuyEth(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                  />
+                  <span className="text-[10px] text-muted-foreground">建议 0.005 ETH (~$15) 抢跑早鸟</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground">信号时效 (秒)</label>
+                    <input
+                      type="number"
+                      value={tradeTimeoutSec}
+                      onChange={(e) => setTradeTimeoutSec(Number(e.target.value))}
+                      className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                    />
+                    <span className="text-[10px] text-muted-foreground">&gt;60s 超时放弃</span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground">追高限制 (%)</label>
+                    <input
+                      type="number"
+                      value={tradeMaxDeviation}
+                      onChange={(e) => setTradeMaxDeviation(Number(e.target.value))}
+                      className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                    />
+                    <span className="text-[10px] text-muted-foreground">超+10%不追</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">DEX 最大交易滑点 (%)</label>
+                  <input
+                    type="number"
+                    value={tradeSlippage}
+                    onChange={(e) => setTradeSlippage(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                  />
+                  <span className="text-[10px] text-muted-foreground">土狗流动性浅，默认 8% 确保极速撮合</span>
+                </div>
+              </div>
+
+              {/* Group B: Multi-Stage Take Profit */}
+              <div className="space-y-4 rounded-lg border border-border/40 p-4">
+                <div className="flex items-center gap-2 font-mono text-sm font-semibold text-emerald-400">
+                  <TrendingUp className="size-4" />
+                  <span>三段式阶梯止盈策略 (TP)</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground">TP1 触发涨幅 (%)</label>
+                    <input
+                      type="number"
+                      value={tradeTp1Pct}
+                      onChange={(e) => setTradeTp1Pct(Number(e.target.value))}
+                      className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                    />
+                    <span className="text-[10px] text-emerald-400">默认 +50% 启动</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground">TP1 抛售比例 (%)</label>
+                    <input
+                      type="number"
+                      value={tradeTp1SellRatio}
+                      onChange={(e) => setTradeTp1SellRatio(Number(e.target.value))}
+                      className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                    />
+                    <span className="text-[10px] text-emerald-400">落袋 50% (收回75%本金)</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground">TP2 触发涨幅 (%)</label>
+                    <input
+                      type="number"
+                      value={tradeTp2Pct}
+                      onChange={(e) => setTradeTp2Pct(Number(e.target.value))}
+                      className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                    />
+                    <span className="text-[10px] text-emerald-400">默认 +100% (翻倍)</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground">TP2 抛售比例 (%)</label>
+                    <input
+                      type="number"
+                      value={tradeTp2SellRatio}
+                      onChange={(e) => setTradeTp2SellRatio(Number(e.target.value))}
+                      className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                    />
+                    <span className="text-[10px] text-emerald-400">再卖 25% (全额保本且大赚)</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">TP3 移动止盈回撤阈值 (%)</label>
+                  <input
+                    type="number"
+                    value={tradeTp3Trailing}
+                    onChange={(e) => setTradeTp3Trailing(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                  />
+                  <span className="text-[10px] text-muted-foreground">
+                    剩余 25% 仓位享受无上限单边牛市，当自历史最高 ATH 回撤超 25% 时清仓
+                  </span>
+                </div>
+              </div>
+
+              {/* Group C: Stop-Loss & Liquidation */}
+              <div className="space-y-4 rounded-lg border border-border/40 p-4">
+                <div className="flex items-center gap-2 font-mono text-sm font-semibold text-rose-400">
+                  <ShieldAlert className="size-4" />
+                  <span>严苛止损与安全清仓机制</span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">快速止损触发线 (%)</label>
+                  <input
+                    type="number"
+                    value={tradeStopLoss}
+                    onChange={(e) => setTradeStopLoss(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm text-rose-400"
+                  />
+                  <span className="text-[10px] text-muted-foreground">
+                    默认 -18% 坚决砍仓，防止土狗直线下跌归零
+                  </span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">最长持仓时效 (分钟)</label>
+                  <input
+                    type="number"
+                    value={tradeMaxHoldMinutes}
+                    onChange={(e) => setTradeMaxHoldMinutes(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                  />
+                  <span className="text-[10px] text-muted-foreground">
+                    默认 360 分钟 (6小时) 自动市价平仓，杜绝死锁僵尸代币
+                  </span>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">防撤池/流动性抽逃清仓线 (%)</label>
+                  <input
+                    type="number"
+                    value={tradeLiqDrain}
+                    onChange={(e) => setTradeLiqDrain(Number(e.target.value))}
+                    className="w-full rounded border border-border/60 bg-secondary/50 px-3 py-1.5 font-mono text-sm"
+                  />
+                  <span className="text-[10px] text-muted-foreground">
+                    池子流动性若短时间蒸发超 35%，判定疑似 Rug Pull 立即紧急清仓
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Active Positions Section */}
+          <div className="flex flex-col gap-4 rounded-xl bg-card p-5 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 pb-3">
+              <div className="flex items-center gap-2">
+                <Flame className="size-4 text-violet-400" />
+                <h3 className="font-mono text-base font-medium">当前活跃持仓</h3>
+                <Badge variant="go">
+                  {tradeData?.activePositions?.length ?? 0} 个监控中
+                </Badge>
+                <span className="text-xs text-muted-foreground">（每 4 秒刷新实时行情与盈亏）</span>
+              </div>
+              {(tradeData?.activePositions?.length ?? 0) > 0 && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    if (confirm("⚠️ 确认要市价一键全部清仓当前所有活跃持仓吗？")) {
+                      closeAllMutation.mutate();
+                    }
+                  }}
+                  disabled={closeAllMutation.isPending}
+                >
+                  <XCircle className="size-3.5 mr-1" />
+                  {closeAllMutation.isPending ? "清仓中..." : "一键全仓市价平仓"}
+                </Button>
+              )}
+            </div>
+
+            {(!tradeData?.activePositions || tradeData.activePositions.length === 0) ? (
+              <div className="flex flex-col items-center justify-center py-10 text-center">
+                <Target className="size-10 text-muted-foreground/40 mb-2" />
+                <p className="font-mono text-sm text-muted-foreground">
+                  当前暂无持仓
+                </p>
+                <p className="text-xs text-muted-foreground/70 max-w-md mt-1">
+                  当 Telegram 频道或 Robinhood 链上雷达捕获到评分 ≥ 80 的潜力 Meme 币时，将根据开仓条件自动在此建立仓位并实施三段式止盈与风控。
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4">
+                {tradeData.activePositions.map((pos) => {
+                  const pnlPct = pos.currentGainPct ?? 0;
+                  const isPositive = pnlPct >= 0;
+                  const entryMs = new Date(pos.entryTime).getTime();
+                  const holdMin = Math.round((Date.now() - entryMs) / 60000);
+                  const explorerUrl =
+                    pos.chain === "bsc"
+                      ? `https://bscscan.com/token/${pos.tokenAddress}`
+                      : `https://robinhoodchain.blockscout.com/token/${pos.tokenAddress}`;
+                  const unrealizedUsd = (pos.entryCostUsd || 0) * (pnlPct / 100);
+                  const athDrawdown =
+                    pos.highestPriceUsd > 0
+                      ? Math.max(
+                          0,
+                          ((pos.highestPriceUsd - (pos.currentPriceUsd || pos.highestPriceUsd)) /
+                            pos.highestPriceUsd) *
+                            100,
+                        )
+                      : 0;
+
+                  return (
+                    <div
+                      key={pos.id}
+                      className="flex flex-col gap-3 rounded-lg border border-border/50 bg-secondary/20 p-4 transition-colors hover:border-border"
+                    >
+                      {/* Top info line */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/30 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-base font-bold text-foreground">
+                            ${pos.symbol}
+                          </span>
+                          <span className="text-xs text-muted-foreground">({pos.name || pos.symbol})</span>
+                          <Badge
+                            variant={pos.chain === "bsc" ? "outline" : "go"}
+                            className={pos.chain === "bsc" ? "text-yellow-400 border-yellow-500/30" : ""}
+                          >
+                            {pos.chain === "bsc" ? "BSC (PancakeSwap)" : "Robinhood (Pons)"}
+                          </Badge>
+                          <span className="font-mono text-xs text-muted-foreground">
+                            [{shortAddr(pos.tokenAddress)}]
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(pos.tokenAddress);
+                              toast.success(`已复制 ${pos.symbol} 合约地址！`);
+                            }}
+                            className="text-muted-foreground hover:text-foreground"
+                            title="复制合约地址"
+                          >
+                            <Copy className="size-3.5" />
+                          </button>
+                          <a
+                            href={explorerUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-muted-foreground hover:text-foreground"
+                            title="查看区块链浏览器"
+                          >
+                            <ExternalLink className="size-3.5" />
+                          </a>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={isPositive ? "go" : "stop"}
+                            className="font-mono text-sm px-2.5 py-0.5"
+                          >
+                            {isPositive ? "+" : ""}
+                            {pnlPct.toFixed(1)}%
+                          </Badge>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => closePositionMutation.mutate(pos.id)}
+                            disabled={closePositionMutation.isPending}
+                          >
+                            <XCircle className="size-3.5 mr-1" />
+                            市价平仓
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Position metrics grid */}
+                      <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
+                        <div>
+                          <span className="text-muted-foreground">买入成本 (入场价):</span>
+                          <p className="font-mono font-medium text-foreground">
+                            ${pos.entryPriceUsd.toFixed(6)}
+                          </p>
+                          <span className="text-[10px] text-muted-foreground">
+                            {pos.entryCostNative.toFixed(4)} {pos.chain === "bsc" ? "BNB" : "ETH"} (${pos.entryCostUsd.toFixed(1)})
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-muted-foreground">当前价格 (最新):</span>
+                          <p
+                            className={cn(
+                              "font-mono font-medium",
+                              isPositive ? "text-emerald-400" : "text-rose-400",
+                            )}
+                          >
+                            ${pos.currentPriceUsd?.toFixed(6) ?? "0.000000"}
+                          </p>
+                          <span className="text-[10px] text-muted-foreground">
+                            未实现: {isPositive ? "+" : ""}${unrealizedUsd.toFixed(2)}
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-muted-foreground">历史最高 ATH:</span>
+                          <p className="font-mono font-medium text-amber-400">
+                            ${pos.highestPriceUsd.toFixed(6)}
+                          </p>
+                          <span className="text-[10px] text-muted-foreground">
+                            高点回撤: -{athDrawdown.toFixed(1)}%
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-muted-foreground">阶梯止盈进度:</span>
+                          <div className="flex flex-col gap-0.5 font-mono text-[11px] mt-0.5">
+                            <span className={pos.tp1Done ? "text-emerald-400" : "text-muted-foreground"}>
+                              TP1 (+50%): {pos.tp1Done ? "✅ 已出50%" : "⏳ 待触发"}
+                            </span>
+                            <span className={pos.tp2Done ? "text-emerald-400" : "text-muted-foreground"}>
+                              TP2 (+100%): {pos.tp2Done ? "✅ 已出25%" : "⏳ 待触发"}
+                            </span>
+                            <span className={pos.tp2Done ? "text-cyan-400" : "text-muted-foreground"}>
+                              TP3 (移动止盈): {pos.tp2Done ? "🏃 追踪中" : "待触发"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <span className="text-muted-foreground">持有时长:</span>
+                          <p className="font-mono font-medium text-foreground">
+                            {holdMin < 60 ? `${holdMin} 分钟` : `${(holdMin / 60).toFixed(1)} 小时`}
+                          </p>
+                          <span className="text-[10px] text-muted-foreground">
+                            已落袋: +${pos.realizedPnlUsd.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Historical Closed Positions Section */}
+          <div className="flex flex-col gap-4 rounded-xl bg-card p-5 shadow-[0_0_0_1px_rgb(255_255_255_/_8%)]">
+            <div className="flex items-center justify-between border-b border-border/50 pb-3">
+              <div className="flex items-center gap-2">
+                <Clock className="size-4 text-muted-foreground" />
+                <h3 className="font-mono text-base font-medium">历史已平仓交易</h3>
+                <Badge variant="outline">
+                  {tradeData?.closedPositions?.length ?? 0} 笔
+                </Badge>
+              </div>
+            </div>
+
+            {(!tradeData?.closedPositions || tradeData.closedPositions.length === 0) ? (
+              <p className="text-xs text-muted-foreground py-4 text-center">
+                暂无历史平仓记录
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {tradeData.closedPositions.slice(0, 20).map((pos) => {
+                  const pnl = pos.realizedPnlUsd ?? 0;
+                  const isProfitable = pnl >= 0;
+                  const entryMs = new Date(pos.entryTime).getTime();
+                  const closeMs = pos.closeTime ? new Date(pos.closeTime).getTime() : Date.now();
+                  const holdMin = Math.round((closeMs - entryMs) / 60000);
+
+                  const reasonMap: Record<string, { label: string; variant: "go" | "stop" | "warn" | "outline" }> = {
+                    CLOSED_TP: { label: "🎯 阶梯止盈清仓", variant: "go" },
+                    CLOSED_SL: { label: "🛑 快速止损触发", variant: "stop" },
+                    CLOSED_TIMEOUT: { label: "⏱️ 6小时超时强平", variant: "outline" },
+                    CLOSED_MANUAL: { label: "👤 人工手动平仓", variant: "outline" },
+                    TAKE_PROFIT_COMPLETE: { label: "🎯 阶梯止盈清仓", variant: "go" },
+                    STOP_LOSS: { label: "🛑 快速止损触发", variant: "stop" },
+                    TIMEOUT_6H: { label: "⏱️ 6小时超时强平", variant: "outline" },
+                    LIQUIDITY_DRAIN: { label: "🚨 防撤池紧急清仓", variant: "stop" },
+                    MANUAL_CLOSE: { label: "👤 人工手动平仓", variant: "outline" },
+                  };
+                  const r = reasonMap[pos.status || ""] || { label: pos.status || "已平仓", variant: "outline" };
+
+                  return (
+                    <div
+                      key={pos.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/30 bg-secondary/15 px-4 py-2.5 text-xs"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span className="font-mono font-bold text-foreground">
+                          ${pos.symbol}
+                        </span>
+                        <Badge variant="outline" className="text-[10px]">
+                          {pos.chain.toUpperCase()}
+                        </Badge>
+                        <Badge variant={r.variant} className="text-[10px]">
+                          {r.label}
+                        </Badge>
+                        <span className="font-mono text-muted-foreground">
+                          持有时长: {holdMin < 60 ? `${holdMin} 分` : `${(holdMin / 60).toFixed(1)} 小时`}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <span className="text-[10px] text-muted-foreground">净盈亏:</span>
+                          <p
+                            className={cn(
+                              "font-mono font-bold",
+                              isProfitable ? "text-emerald-400" : "text-rose-400",
+                            )}
+                          >
+                            {isProfitable ? "+" : ""}${pnl.toFixed(2)}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => onInspect?.(pos.tokenAddress)}
+                        >
+                          <Radio className="size-3.5 mr-1" />
+                          验合约
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
