@@ -15,3 +15,5 @@ artifacts
 attachments
 public/__grok
 routeTree.gen.ts
+data/
+
