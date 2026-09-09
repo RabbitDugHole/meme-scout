@@ -357,4 +357,100 @@ export type BacktestState = {
   trackedTokens: TrackedAlertToken[];
 };
 
+export type TradeConfig = {
+  dryRun: boolean; // default true for safety
+  autoBuyEnabled: boolean;
+  buyAmountBscBnb: number; // default: 0.05 BNB (~$30)
+  buyAmountRhEth: number; // default: 0.005 ETH (~$15)
+  maxPriceDeviationPct: number; // default: 10% max price deviation at execution
+  executionTimeoutSeconds: number; // default: 60s max signal age
+  slippagePct: number; // default: 8% (for meme tokens)
+  gasMultiplier: number; // default: 1.2
+  tp1Pct: number; // default: +50%
+  tp1SellRatioPct: number; // default: 50%
+  tp2Pct: number; // default: +100%
+  tp2SellRatioPct: number; // default: 25%
+  tp3TrailingStopPct: number; // default: 25% drawdown from peak ATH
+  stopLossPct: number; // default: -18%
+  maxHoldTimeMinutes: number; // default: 360 (6 hours)
+  emergencyLiquidityDrainPct: number; // default: 35%
+  larkTradeNotification: boolean;
+  walletAddress?: string;
+  hasBscKey: boolean;
+  hasRhKey: boolean;
+};
+
+export type TradeTxRecord = {
+  id: string;
+  type:
+    | "BUY"
+    | "SELL_TP1"
+    | "SELL_TP2"
+    | "SELL_SL"
+    | "SELL_TIMEOUT"
+    | "SELL_TRAILING"
+    | "SELL_MANUAL";
+  timestamp: string;
+  txHash?: string;
+  amountIn: string;
+  amountOut: string;
+  priceUsd: number;
+  priceNative: number;
+  pnlUsd?: number;
+  pnlPct?: number;
+  dryRun: boolean;
+  status: "PENDING" | "CONFIRMED" | "FAILED";
+  error?: string;
+};
+
+export type TradePosition = {
+  id: string;
+  tokenAddress: string;
+  symbol: string;
+  name?: string;
+  chain: "bsc" | "robinhood" | string;
+  source: string;
+  entryTime: string;
+  entryPriceUsd: number;
+  entryPriceNative: number;
+  entryAmountTokens: string; // Token units formatted
+  initialTokens: string;
+  remainingTokens: string;
+  entryCostNative: number;
+  entryCostUsd: number;
+  highestPriceUsd: number;
+  highestGainPct: number;
+  currentPriceUsd: number;
+  currentGainPct: number;
+  status:
+    | "OPEN"
+    | "PARTIAL_TP1"
+    | "PARTIAL_TP2"
+    | "CLOSED_TP"
+    | "CLOSED_SL"
+    | "CLOSED_TIMEOUT"
+    | "CLOSED_MANUAL";
+  tp1Done: boolean;
+  tp2Done: boolean;
+  txHistory: TradeTxRecord[];
+  realizedPnlUsd: number;
+  realizedPnlNative: number;
+  closeTime?: string;
+};
+
+export type TradeState = {
+  isRunning: boolean;
+  config: TradeConfig;
+  walletAddress?: string;
+  bscBnbBalance: number;
+  rhEthBalance: number;
+  activePositions: TradePosition[];
+  closedPositions: TradePosition[];
+  totalRealizedPnlUsd: number;
+  winTradeCount: number;
+  lossTradeCount: number;
+  winRatePct: number;
+};
+
+
 
