@@ -1,6 +1,7 @@
 import { runScan } from "./scan.server";
 import { DEFAULT_LARK_WEBHOOK_URL, sendLarkAlarm, sendLarkTestMessage } from "./lark";
 import { backtestEngine } from "./backtest.server";
+import { tradeService } from "./trade.server";
 import type { AlarmRecord, Candidate, MonitorConfig, MonitorState } from "./types";
 import type { MemeIndicators } from "./indicators";
 
@@ -212,6 +213,20 @@ class PotentialMemeMonitor {
           priceUsd: candidate.priceUsd ?? null,
           mcapUsd: candidate.mcapUsd ?? null,
           liquidityUsd: candidate.liquidityUsd ?? null,
+        });
+
+        // Trigger Automated Trading Module
+        tradeService.handleTokenAlert({
+          tokenAddress: candidate.address,
+          symbol: candidate.symbol,
+          name: candidate.name,
+          chain: "Robinhood Chain",
+          source: "robinhood-scanner",
+          score: indicators.totalScore,
+          priceUsd: candidate.priceUsd ?? null,
+          timestamp: record.timestamp,
+        }).catch((err) => {
+          console.warn("[Monitor] 自动买入执行异常:", err?.message || err);
         });
 
         newAlarms.push(record);

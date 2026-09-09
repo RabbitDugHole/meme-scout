@@ -8,6 +8,7 @@
 
 import { DEFAULT_LARK_WEBHOOK_URL, sendLarkTgAlarm } from "./lark";
 import { backtestEngine } from "./backtest.server";
+import { tradeService } from "./trade.server";
 import type {
   TgAlarmRecord,
   TgChannelConfig,
@@ -312,6 +313,20 @@ export class TelegramChannelMonitor {
             priceUsd: evalResult.liveData?.priceUsd ?? null,
             mcapUsd: evalResult.liveData?.mcapUsd ?? null,
             liquidityUsd: evalResult.liveData?.liquidityUsd ?? null,
+          });
+
+          // Trigger Automated Trading Module
+          tradeService.handleTokenAlert({
+            tokenAddress: post.address,
+            symbol: post.symbol,
+            name: post.name,
+            chain: post.chain,
+            source: `tg-${post.channel}`,
+            score: evalResult.totalScore,
+            priceUsd: evalResult.liveData?.priceUsd ?? null,
+            timestamp: alarmRecord.timestamp,
+          }).catch((err) => {
+            console.warn("[TgMonitor] 自动买入执行异常:", err?.message || err);
           });
 
           newAlarmsCount++;
