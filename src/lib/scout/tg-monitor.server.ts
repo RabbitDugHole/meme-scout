@@ -7,6 +7,7 @@
  */
 
 import { DEFAULT_LARK_WEBHOOK_URL, sendLarkTgAlarm } from "./lark";
+import { backtestEngine } from "./backtest.server";
 import type {
   TgAlarmRecord,
   TgChannelConfig,
@@ -297,6 +298,21 @@ export class TelegramChannelMonitor {
           if (this.alarmHistory.length > 50) {
             this.alarmHistory = this.alarmHistory.slice(0, 50);
           }
+
+          // Record for 1h / 24h win-rate backtesting
+          backtestEngine.recordAlert({
+            tokenAddress: post.address,
+            symbol: post.symbol,
+            name: post.name,
+            chain: post.chain,
+            source: "telegram-channel",
+            channel: post.channel,
+            score: evalResult.totalScore,
+            tier: evalResult.potentialTier,
+            priceUsd: evalResult.liveData?.priceUsd ?? null,
+            mcapUsd: evalResult.liveData?.mcapUsd ?? null,
+            liquidityUsd: evalResult.liveData?.liquidityUsd ?? null,
+          });
 
           newAlarmsCount++;
         }

@@ -1,5 +1,6 @@
 import { runScan } from "./scan.server";
 import { DEFAULT_LARK_WEBHOOK_URL, sendLarkAlarm, sendLarkTestMessage } from "./lark";
+import { backtestEngine } from "./backtest.server";
 import type { AlarmRecord, Candidate, MonitorConfig, MonitorState } from "./types";
 import type { MemeIndicators } from "./indicators";
 
@@ -199,6 +200,20 @@ class PotentialMemeMonitor {
           this.alarmHistory = this.alarmHistory.slice(0, 50);
         }
 
+        // Record for 1h / 24h win-rate backtesting
+        backtestEngine.recordAlert({
+          tokenAddress: candidate.address,
+          symbol: candidate.symbol,
+          name: candidate.name,
+          chain: "Robinhood Chain",
+          source: "robinhood-scanner",
+          score: indicators.totalScore,
+          tier: indicators.potentialTier,
+          priceUsd: candidate.priceUsd ?? null,
+          mcapUsd: candidate.mcapUsd ?? null,
+          liquidityUsd: candidate.liquidityUsd ?? null,
+        });
+
         newAlarms.push(record);
       }
 
@@ -269,6 +284,19 @@ class PotentialMemeMonitor {
     if (this.alarmHistory.length > 50) {
       this.alarmHistory = this.alarmHistory.slice(0, 50);
     }
+
+    backtestEngine.recordAlert({
+      tokenAddress: candidate.address,
+      symbol: candidate.symbol,
+      name: candidate.name,
+      chain: "Robinhood Chain",
+      source: "robinhood-scanner",
+      score: ind.totalScore,
+      tier: ind.potentialTier,
+      priceUsd: candidate.priceUsd ?? null,
+      mcapUsd: candidate.priceUsd ?? null,
+      liquidityUsd: candidate.liquidityUsd ?? null,
+    });
 
     return record;
   }
