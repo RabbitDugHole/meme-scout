@@ -18,13 +18,17 @@ import type {
   LpStage,
   LpState,
   LpTxRecord,
+  V4PoolItem,
 } from "./types";
 import {
   sendLarkLpOpenAlert,
   sendLarkLpCollectAlert,
   sendLarkComprehensiveLpReport,
+  sendLarkLpRebalanceAlert,
+  sendLarkLpOpportunityAlert,
   DEFAULT_LARK_WEBHOOK_URL,
 } from "./lark";
+import { extractRwaStock } from "./stocks";
 
 // Robinhood Chain definition
 const robinhoodChain = defineChain({
@@ -88,10 +92,27 @@ export class LpService {
     sidewaysCoreWidthPct: 15, // ±15%
     sidewaysDefendSharePct: 30,
 
+    // RWA Tokenized Equities Settings
+    rwaBandWidthPct: 10, // ±10% for stocks
+    rwaCapitalUsd: 100, // 100 USDG for RWA
+
+    // Dynamic Rebalancing & IL Stop Loss
+    enableAutoRebalance: true,
+    rebalanceDriftThresholdPct: 12, // 12% drift
+    maxRebalancesPerPosition: 3,
+    netPnlStopLossPct: -8, // -8% net pnl stop loss
+
+    // Risk & Profit Management
     withdrawPrincipalFeeRatio: 0.35,
     volumeDropExitThresholdPct: 50,
     stopLossPriceDropPct: -25,
     maxHoldMinutes: 720,
+
+    // High Yield LP Opportunity Scanner Settings
+    minOpportunityFeeRatePct: 80, // 80% daily fee rate
+    minOpportunityVolume2hUsd: 10000,
+    maxOpportunityActiveLiqUsd: 80000,
+    opportunityAlertCooldownMin: 60,
 
     larkNotification: true,
     webhookUrl: DEFAULT_LARK_WEBHOOK_URL,
@@ -273,6 +294,18 @@ export class LpService {
   }
 
   /**
+   * Concentrated Liquidity Capital Efficiency Multiplier:
+   * kappa = 1 / (1 - sqrt(minPrice / maxPrice))
+   */
+  public static calculateConcentrationMultiplier(minPrice: number, maxPrice: number): number {
+    if (minPrice <= 0 || maxPrice <= minPrice) return 1;
+    const ratio = Math.sqrt(minPrice / maxPrice);
+    if (ratio >= 0.999) return 50;
+    const multiplier = 1 / (1 - ratio);
+    return Math.min(50, Math.max(1, Number(multiplier.toFixed(2))));
+  }
+
+  /**
    * Build asymmetric range segments based on token life cycle stage.
    */
   public calculateRanges(
@@ -282,6 +315,55 @@ export class LpService {
     tickSpacing: number = 200,
   ): LpRangeSegment[] {
     const segments: LpRangeSegment[] = [];
+
+    if (stage === "RWA_STABLE") {
+      // RWA Tokenized Equities (Stocks) - Concentrated ±10% Band
+      const halfWidth = (this.config.rwaBandWidthPct || 10) / 100;
+      const coreMin = entryPrice * (1 - halfWidth);
+      const coreMax = entryPrice * (1 + halfWidth);
+      const coreLowerTick = LpService.alignTick(LpService.priceToTick(coreMin), tickSpacing);
+      const coreUpperTick = LpService.alignTick(LpService.priceToTick(coreMax), tickSpacing);
+
+      segments.push({
+        segmentName: `RWA 稳健核心带 (80%) [±${this.config.rwaBandWidthPct}%]`,
+        minPriceUsd: LpService.tickToPrice(coreLowerTick),
+        maxPriceUsd: LpService.tickToPrice(coreUpperTick),
+        lowerTick: coreLowerTick,
+        upperTick: coreUpperTick,
+        capitalSharePct: 80,
+        capitalAllocatedUsd: capitalTotal * 0.8,
+        inRange: true,
+      });
+
+      // Lower Buffer (10%)
+      const lowerMin = entryPrice * (1 - halfWidth * 1.6);
+      const lowerLowerTick = LpService.alignTick(LpService.priceToTick(lowerMin), tickSpacing);
+      segments.push({
+        segmentName: "RWA 防守下轨 (10%)",
+        minPriceUsd: LpService.tickToPrice(lowerLowerTick),
+        maxPriceUsd: LpService.tickToPrice(coreLowerTick),
+        lowerTick: lowerLowerTick,
+        upperTick: coreLowerTick,
+        capitalSharePct: 10,
+        capitalAllocatedUsd: capitalTotal * 0.1,
+        inRange: false,
+      });
+
+      // Upper Buffer (10%)
+      const upperMax = entryPrice * (1 + halfWidth * 1.6);
+      const upperUpperTick = LpService.alignTick(LpService.priceToTick(upperMax), tickSpacing);
+      segments.push({
+        segmentName: "RWA 获利上轨 (10%)",
+        minPriceUsd: LpService.tickToPrice(coreUpperTick),
+        maxPriceUsd: LpService.tickToPrice(upperUpperTick),
+        lowerTick: coreUpperTick,
+        upperTick: upperUpperTick,
+        capitalSharePct: 10,
+        capitalAllocatedUsd: capitalTotal * 0.1,
+        inRange: false,
+      });
+      return segments;
+    }
 
     if (stage === "PUMP") {
       // 1. Core Fee Zone (40%)
@@ -410,8 +492,11 @@ export class LpService {
       return null;
     }
 
-    // Score filter
-    if (params.score < this.config.minScoreThreshold) {
+    // Check if RWA
+    const rwaMatch = extractRwaStock(params.symbol);
+
+    // Score filter (RWA relaxes score filter due to inherent fundamental credibility)
+    if (!rwaMatch.isRwa && params.score < this.config.minScoreThreshold) {
       return null;
     }
 
@@ -426,25 +511,34 @@ export class LpService {
     }
 
     const volToLiqRatio = volume5m / liquidity;
-    if (volToLiqRatio < this.config.minVolumeToLiquidityRatio) {
+    if (!rwaMatch.isRwa && volToLiqRatio < this.config.minVolumeToLiquidityRatio) {
       // Does not meet high-frequency friction criteria
       return null;
     }
 
     // Determine stage
     const priceChange5m = poolInfo?.priceChangeM5 || 0;
-    const stage: LpStage = priceChange5m > 10 || volToLiqRatio >= 2.0 ? "PUMP" : "SIDEWAYS";
+    let stage: LpStage = "SIDEWAYS";
+    if (rwaMatch.isRwa) {
+      stage = "RWA_STABLE";
+    } else if (priceChange5m > 10 || volToLiqRatio >= 2.0) {
+      stage = "PUMP";
+    }
 
     return this.openLpPosition({
       tokenAddress: params.tokenAddress,
       symbol: params.symbol,
-      name: params.name || poolInfo?.name,
+      name: params.name || poolInfo?.name || rwaMatch.stockName,
       chain: params.chain,
       pairAddress: poolInfo?.pairAddress || params.pairAddress,
       priceUsd: currentPrice,
       liquidityUsd: liquidity,
       volume5m,
       stage,
+      isRwa: rwaMatch.isRwa,
+      stockSymbol: rwaMatch.stockSymbol,
+      category: rwaMatch.isRwa ? "RWA" : "MEME",
+      customCapitalUsd: rwaMatch.isRwa ? this.config.rwaCapitalUsd : undefined,
     });
   }
 
@@ -454,15 +548,44 @@ export class LpService {
     name?: string;
     chain: string;
     pairAddress?: string;
+    feeTier?: number;
     priceUsd: number;
     liquidityUsd: number;
     volume5m: number;
     stage: LpStage;
+    category?: import("./types").LpCategory;
+    isRwa?: boolean;
+    stockSymbol?: string;
+    activeBandLiquidityUsd?: number;
     customCapitalUsd?: number;
   }): Promise<LpPosition> {
-    const capitalInvested = params.customCapitalUsd || this.config.capitalPerPoolUsd;
-    const tickSpacing = 200; // 1% pool spacing
-    const ranges = this.calculateRanges(params.priceUsd, params.stage, capitalInvested, tickSpacing);
+    const rwaMatch = extractRwaStock(params.symbol);
+    const isRwa = params.isRwa ?? rwaMatch.isRwa;
+    const stockSymbol = params.stockSymbol || rwaMatch.stockSymbol;
+    const category = params.category || (isRwa ? "RWA" : "MEME");
+    const stage = params.stage || (isRwa ? "RWA_STABLE" : "SIDEWAYS");
+
+    const capitalInvested =
+      params.customCapitalUsd ||
+      (isRwa ? this.config.rwaCapitalUsd : this.config.capitalPerPoolUsd);
+
+    const feeTier = params.feeTier || this.config.preferredFeeTier;
+    const tickSpacing = feeTier >= 20000 ? 500 : 200;
+    const ranges = this.calculateRanges(params.priceUsd, stage, capitalInvested, tickSpacing);
+
+    // Active band & concentration metrics
+    const coreRange = ranges[0];
+    const capitalEfficiency = LpService.calculateConcentrationMultiplier(
+      coreRange.minPriceUsd,
+      coreRange.maxPriceUsd,
+    );
+    const activeBandLiq =
+      params.activeBandLiquidityUsd || Math.max(1000, params.liquidityUsd * 0.25);
+    const feeTierRate = feeTier / 1_000_000;
+    const dailyFeeRatePct =
+      activeBandLiq > 0
+        ? Math.min(1000, ((params.volume5m * 12 * 24 * feeTierRate) / activeBandLiq) * 100)
+        : 0;
 
     const positionId = `lp-${Date.now()}-${params.symbol.toLowerCase()}`;
     const txId = `tx-${Date.now()}-open`;
@@ -471,7 +594,7 @@ export class LpService {
       id: txId,
       type: "MINT_LP",
       timestamp: new Date().toISOString(),
-      details: `创建 V3 非对称 LP 头寸 (${params.stage === "PUMP" ? "拉升期偏上方" : "横盘期Spot"}) 资金: $${capitalInvested.toFixed(2)} USDG`,
+      details: `创建 V4 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, 乘数: ${capitalEfficiency.toFixed(1)}x`,
       amountUsd: capitalInvested,
       dryRun: this.config.dryRun,
       status: "CONFIRMED",
@@ -481,11 +604,14 @@ export class LpService {
       id: positionId,
       tokenAddress: params.tokenAddress,
       symbol: params.symbol,
-      name: params.name,
+      name: params.name || rwaMatch.stockName,
       chain: params.chain,
       pairAddress: params.pairAddress,
-      feeTier: this.config.preferredFeeTier,
-      stage: params.stage,
+      feeTier,
+      stage,
+      category,
+      isRwa,
+      stockSymbol,
       entryTime: new Date().toISOString(),
       entryPriceUsd: params.priceUsd,
       initialUsdInvested: capitalInvested,
@@ -494,12 +620,17 @@ export class LpService {
       liquidityAtEntry: params.liquidityUsd,
       latestVolume5m: params.volume5m,
       volumeDropPct: 0,
+      activeBandLiquidityUsd: activeBandLiq,
+      capitalEfficiencyRatio: capitalEfficiency,
+      dailyFeeRatePct,
+      holdVsLpScore: 50,
       ranges,
       feeEarnedUsd: 0,
       principalWithdrawnUsd: 0,
       impermanentLossUsd: 0,
       netPnlUsd: 0,
       netPnlPct: 0,
+      rebalanceCount: 0,
       status: "ACTIVE",
       txHistory: [txRecord],
     };
@@ -508,7 +639,7 @@ export class LpService {
     this.saveToStorage();
 
     console.log(
-      `🌊 [LpService] 成功建立 ${params.stage} 做市头寸: $${params.symbol} ($${capitalInvested.toFixed(2)} USDG), 5m量能: $${params.volume5m.toLocaleString()}, 深度: $${params.liquidityUsd.toLocaleString()}`,
+      `🌊 [LpService] 建立集中做市头寸: $${params.symbol} (${stage}, 属性: ${category}), 资金: $${capitalInvested.toFixed(2)} USDG, 日费率预估: ${dailyFeeRatePct.toFixed(1)}%/天`,
     );
 
     if (this.config.larkNotification) {
@@ -554,33 +685,47 @@ export class LpService {
           }
         }
 
-        // Simulate Fee Accrual (time step ~30 seconds)
-        // Fee = Volume_slice * feeTier * (activeCapital / ActiveLiquidity) * concentrationMultiplier
+        // Concentrated Fee Accrual (time step ~30 seconds)
+        // Using Active In-Range Band Liquidity Model
+        const activeBandLiq = Math.max(1000, pos.activeBandLiquidityUsd || pos.liquidityAtEntry * 0.25);
+        const feeTierRate = pos.feeTier / 1_000_000;
+
         if (activeCapitalAllocated > 0) {
           const sliceVolume = liveVol5m / 10; // ~30s slice of 5m volume
-          const poolLiq = Math.max(1000, pos.liquidityAtEntry);
-          const feeTierRate = pos.feeTier / 1_000_000; // 0.01 for 1%
-          const capitalMultiplier = 15; // V3 concentrated capital efficiency multiplier
-          const incrementalFee = sliceVolume * feeTierRate * (activeCapitalAllocated / poolLiq) * capitalMultiplier;
+          const poolFeeShare = activeCapitalAllocated / activeBandLiq;
+          const incrementalFee = sliceVolume * feeTierRate * poolFeeShare;
           pos.feeEarnedUsd += Math.max(0, incrementalFee);
         }
 
-        // Calculate Impermanent Loss
-        // When price drops relative to entry:
+        // Update real-time daily fee rate %
+        pos.dailyFeeRatePct = Math.min(
+          1200,
+          ((liveVol5m * 12 * 24 * feeTierRate) / activeBandLiq) * 100,
+        );
+
+        // Concentrated Impermanent Loss Model
         const priceRatio = livePrice / Math.max(0.0000001, pos.entryPriceUsd);
         if (priceRatio < 1.0) {
-          // Downside IL: concentrated downside exposure
+          // Downside IL
           const dropRatio = 1 - priceRatio;
-          pos.impermanentLossUsd = pos.initialUsdInvested * Math.min(1, dropRatio * 1.2);
+          const ilMultiplier = pos.isRwa ? 1.0 : 1.25;
+          pos.impermanentLossUsd = pos.initialUsdInvested * Math.min(1, dropRatio * ilMultiplier);
         } else {
-          // Upside: price surged above range, tokens sold to USDG
+          // Upside: tokens gradually sold to quote token
           const pumpRatio = priceRatio - 1;
-          pos.impermanentLossUsd = pos.initialUsdInvested * Math.min(0.3, pumpRatio * 0.1);
+          pos.impermanentLossUsd = pos.initialUsdInvested * Math.min(0.25, pumpRatio * 0.08);
         }
 
-        // Calculate Net PnL
+        // Net PnL
         pos.netPnlUsd = pos.feeEarnedUsd - pos.impermanentLossUsd;
         pos.netPnlPct = (pos.netPnlUsd / pos.initialUsdInvested) * 100;
+
+        // Hold vs LP Comparative Score (0-100)
+        const priceChangePct = ((livePrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+        pos.holdVsLpScore = Math.min(
+          100,
+          Math.max(0, Math.round(50 + (pos.netPnlPct - priceChangePct) * 2)),
+        );
 
         // 1. Check Principal Recovery Condition (保本提润)
         const principalTarget = pos.initialUsdInvested * this.config.withdrawPrincipalFeeRatio;
@@ -589,7 +734,7 @@ export class LpService {
           pos.status === "ACTIVE" &&
           pos.principalWithdrawnUsd === 0
         ) {
-          const withdrawAmount = pos.initialUsdInvested * 0.5; // Withdraw 50% initial capital
+          const withdrawAmount = pos.initialUsdInvested * 0.5;
           pos.principalWithdrawnUsd += withdrawAmount;
           pos.status = "PRINCIPAL_SECURED";
 
@@ -597,15 +742,13 @@ export class LpService {
             id: `tx-${Date.now()}-withdraw`,
             type: "WITHDRAW_PRINCIPAL",
             timestamp: new Date().toISOString(),
-            details: `手续费收入已达 $${pos.feeEarnedUsd.toFixed(2)}，成功提回本金 $${withdrawAmount.toFixed(2)} USDG，头寸进入零风险收租状态`,
+            details: `手续费已达 $${pos.feeEarnedUsd.toFixed(2)}，成功提回本金 $${withdrawAmount.toFixed(2)} USDG，头寸进入零风险收租状态`,
             amountUsd: withdrawAmount,
             dryRun: this.config.dryRun,
             status: "CONFIRMED",
           });
 
-          console.log(
-            `💰 [LpService] $${pos.symbol} 触发保本提润: 已提回 $${withdrawAmount.toFixed(2)} USDG`,
-          );
+          console.log(`💰 [LpService] $${pos.symbol} 触发保本提润: 已提回 $${withdrawAmount.toFixed(2)} USDG`);
 
           if (this.config.larkNotification) {
             sendLarkLpCollectAlert({
@@ -617,25 +760,59 @@ export class LpService {
           }
         }
 
-        // 2. Check Emergency Flash Exit Conditions
-        // A. Volume Crash (>50% drop)
+        // 2. Dynamic Rebalancing Check (智能移仓自愈)
+        if (
+          this.config.enableAutoRebalance &&
+          (pos.rebalanceCount || 0) < this.config.maxRebalancesPerPosition &&
+          (pos.status === "ACTIVE" || pos.status === "PRINCIPAL_SECURED")
+        ) {
+          const priceDriftPct =
+            Math.abs((livePrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+          const priceDropPct =
+            ((livePrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+
+          // If drifted outside band and not crashing below stop loss
+          if (
+            priceDriftPct >= this.config.rebalanceDriftThresholdPct &&
+            priceDropPct > this.config.stopLossPriceDropPct
+          ) {
+            await this.rebalancePosition(
+              pos.id,
+              `市价偏离基准已达 ${priceDriftPct.toFixed(1)}% (智能动态移仓重平衡)`,
+            );
+            continue;
+          }
+        }
+
+        // 3. Risk & Circuit Breaker Exit Conditions
+        // A. Net PnL Stop Loss Breached
+        const isNetLossBreached = pos.netPnlPct <= this.config.netPnlStopLossPct;
+
+        // B. Volume Crash (>50% drop)
         const isVolumeCrashed = pos.volumeDropPct >= this.config.volumeDropExitThresholdPct;
 
-        // B. Price fell below the lowest buffer range
+        // C. Price fell below the lowest buffer range
         const lowestRange = pos.ranges.reduce((min, r) => Math.min(min, r.minPriceUsd), Infinity);
         const isPriceBreakoutDown = livePrice < lowestRange;
 
-        // C. Hold Timeout
+        // D. Hold Timeout
         const entryMs = new Date(pos.entryTime).getTime();
         const holdMinutes = (nowMs - entryMs) / 60000;
-        const isTimeout = holdMinutes >= this.config.maxHoldMinutes;
+        const maxHold = pos.isRwa ? this.config.maxHoldMinutes * 3 : this.config.maxHoldMinutes;
+        const isTimeout = holdMinutes >= maxHold;
 
-        if (isVolumeCrashed) {
+        if (isNetLossBreached) {
+          await this.closePosition(
+            pos.id,
+            "CLOSED_STOPLOSS",
+            `净亏损触及硬止损线 (${pos.netPnlPct.toFixed(1)}% <= ${this.config.netPnlStopLossPct}%), 启动熔断撤池`,
+          );
+        } else if (isVolumeCrashed && !pos.isRwa) {
           await this.closePosition(pos.id, "CLOSED_VOL_DROP", "5分钟交易量断崖下跌 >50% (流动摩擦枯竭)");
         } else if (isPriceBreakoutDown) {
           await this.closePosition(pos.id, "CLOSED_STOPLOSS", "价格击穿最下沿防护区间 (触发紧急熔断 Flash Exit)");
         } else if (isTimeout) {
-          await this.closePosition(pos.id, "CLOSED_TIMEOUT", `持仓时间已达 ${this.config.maxHoldMinutes} 分钟上限`);
+          await this.closePosition(pos.id, "CLOSED_TIMEOUT", `持仓时间已达 ${maxHold} 分钟上限`);
         }
       }
 
@@ -645,6 +822,56 @@ export class LpService {
     } finally {
       this.isCheckingPositions = false;
     }
+  }
+
+  // ==========================================
+  // Dynamic Rebalance Position Handler
+  // ==========================================
+
+  public async rebalancePosition(positionId: string, reason: string): Promise<LpPosition | null> {
+    const pos = this.activePositions.get(positionId);
+    if (!pos) return null;
+
+    const oldPrice = pos.entryPriceUsd;
+    const newPrice = pos.currentPriceUsd;
+    const tickSpacing = pos.feeTier >= 20000 ? 500 : 200;
+    const newRanges = this.calculateRanges(newPrice, pos.stage, pos.initialUsdInvested, tickSpacing);
+
+    pos.entryPriceUsd = newPrice;
+    pos.ranges = newRanges;
+    pos.rebalanceCount = (pos.rebalanceCount || 0) + 1;
+    pos.lastRebalanceTime = new Date().toISOString();
+
+    const txRecord: LpTxRecord = {
+      id: `tx-${Date.now()}-rebalance`,
+      type: "REBALANCE",
+      timestamp: pos.lastRebalanceTime,
+      details: `${reason}: 基准价从 $${oldPrice.toFixed(4)} 移至 $${newPrice.toFixed(4)}，已锁定手续费收益 $${pos.feeEarnedUsd.toFixed(2)}`,
+      amountUsd: pos.initialUsdInvested,
+      feeHarvestedUsd: pos.feeEarnedUsd,
+      dryRun: this.config.dryRun,
+      status: "CONFIRMED",
+    };
+    pos.txHistory.push(txRecord);
+    this.saveToStorage();
+
+    console.log(
+      `🔄 [LpService] $${pos.symbol} 智能移仓完成 (第 ${pos.rebalanceCount} 次): 新中枢价 $${newPrice.toFixed(4)}`,
+    );
+
+    if (this.config.larkNotification) {
+      const driftPct = Math.abs((newPrice - oldPrice) / oldPrice) * 100;
+      sendLarkLpRebalanceAlert({
+        position: pos,
+        oldPriceUsd: oldPrice,
+        newPriceUsd: newPrice,
+        driftPct,
+        dryRun: this.config.dryRun,
+        webhookUrl: this.config.webhookUrl,
+      }).catch((err) => console.warn("[LpService] Lark 移仓告警失败:", err));
+    }
+
+    return pos;
   }
 
   // ==========================================

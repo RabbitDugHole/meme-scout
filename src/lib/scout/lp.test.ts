@@ -5,6 +5,8 @@ import {
   formatLpOpenAlert,
   formatLpCollectAlert,
   formatComprehensiveLpReport,
+  formatLpRebalanceAlert,
+  formatLpOpportunityAlert,
 } from "./lark";
 import type { LpPosition, LpRangeSegment } from "./types";
 
@@ -256,4 +258,108 @@ describe("Lark LP Alerts Formatting Rules", () => {
     assert.ok(text.includes("无常损失(IL)"));
     assert.ok(text.includes("最终净实现盈亏"));
   });
+
+  test("formatLpRebalanceAlert must start with ** and contain dynamic rebalance details", () => {
+    const text = formatLpRebalanceAlert({
+      position: { ...dummyPos, isRwa: true, rebalanceCount: 1 },
+      oldPriceUsd: 0.005,
+      newPriceUsd: 0.0058,
+      driftPct: 16.0,
+      dryRun: true,
+    });
+
+    assert.ok(text.startsWith("**"));
+    assert.ok(text.includes("智能动态移仓重平衡"));
+    assert.ok(text.includes("16.0%"));
+    assert.ok(text.includes("第 1 次"));
+    assert.ok(text.includes("美股 RWA"));
+  });
+
+  test("formatLpOpportunityAlert must start with ** and contain Barker metrics", () => {
+    const text = formatLpOpportunityAlert({
+      pool: {
+        poolId: "pool-canal-nvda",
+        pairAddress: "0x97d3331111111111111111111111111111111111",
+        token0Symbol: "CANAL",
+        token0Address: "0x1111111111111111111111111111111111111111",
+        token1Symbol: "NVDA",
+        token1Address: "0x2222222222222222222222222222222222222222",
+        pairName: "CANAL/NVDA",
+        category: "RWA",
+        isRwa: true,
+        stockSymbol: "NVDA",
+        feeTierPct: 1.0,
+        feeTierBps: 10000,
+        currentPriceUsd: 125.5,
+        priceChange1hPct: 2.5,
+        activeBandLiquidityUsd: 6425,
+        totalLiquidityUsd: 76435,
+        volume2hUsd: 209996,
+        volume24hUsd: 1500000,
+        fee2hUsd: 2295,
+        fee24hUsd: 15000,
+        dailyFeeRatePct: 429.0,
+        annualizedAprPct: 156585,
+        capitalEfficiency: 10.5,
+        healthScore: 92,
+        barkerUrl: "https://app.barker.money/raid/robinhood",
+      },
+    });
+
+    assert.ok(text.startsWith("**"));
+    assert.ok(text.includes("CANAL/NVDA"));
+    assert.ok(text.includes("美股 RWA (NVDA)"));
+    assert.ok(text.includes("429.0%/天"));
+    assert.ok(text.includes("$6,425"));
+  });
 });
+
+describe("V4 Concentrated Liquidity & Dynamic Rebalancing", () => {
+  test("calculateConcentrationMultiplier should follow kappa formula", () => {
+    // For ±15%: min 85, max 115 -> sqrt(85/115) = 0.8597 -> 1 / (1 - 0.8597) = 7.13
+    const mult15 = LpService.calculateConcentrationMultiplier(85, 115);
+    assert.ok(mult15 >= 7.0 && mult15 <= 7.3, `Mult 15% should be ~7.13, got ${mult15}`);
+
+    // For ±10%: min 90, max 110 -> sqrt(90/110) = 0.9045 -> 1 / (1 - 0.9045) = 10.47
+    const mult10 = LpService.calculateConcentrationMultiplier(90, 110);
+    assert.ok(mult10 >= 10.2 && mult10 <= 10.7, `Mult 10% should be ~10.47, got ${mult10}`);
+  });
+
+  test("should calculate RWA_STABLE ranges with ±10% narrow band and 80% core allocation", () => {
+    const entryPrice = 120.0;
+    const capital = 100;
+    const ranges = lpService.calculateRanges(entryPrice, "RWA_STABLE", capital, 200);
+
+    assert.equal(ranges.length, 3);
+    const core = ranges[0];
+    assert.equal(core.capitalSharePct, 80);
+    assert.equal(core.capitalAllocatedUsd, 80);
+    assert.ok(core.segmentName.includes("RWA 稳健核心带"));
+    assert.ok(core.minPriceUsd < entryPrice && core.maxPriceUsd > entryPrice);
+  });
+
+  test("rebalancePosition should re-center ranges and increment rebalanceCount", async () => {
+    const pos = await lpService.openLpPosition({
+      tokenAddress: "0x3333333333333333333333333333333333333333",
+      symbol: "REBAL_TOKEN",
+      chain: "robinhood",
+      priceUsd: 1.0,
+      liquidityUsd: 100000,
+      volume5m: 50000,
+      stage: "SIDEWAYS",
+      customCapitalUsd: 50,
+    });
+
+    assert.equal(pos.rebalanceCount, 0);
+    pos.currentPriceUsd = 1.15; // 15% drift
+
+    const rebalanced = await lpService.rebalancePosition(pos.id, "Drifted +15%");
+    assert.ok(rebalanced);
+    assert.equal(rebalanced.rebalanceCount, 1);
+    assert.equal(rebalanced.entryPriceUsd, 1.15);
+    assert.ok(rebalanced.txHistory.some((t) => t.type === "REBALANCE"));
+
+    await lpService.closePosition(pos.id, "CLOSED_MANUAL", "Clean test position");
+  });
+});
+
