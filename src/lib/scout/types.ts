@@ -454,10 +454,12 @@ export type TradeState = {
 };
 
 // ==========================================
-// V3 Asymmetric LP Market Maker Types
+// V4 Concentrated & Asymmetric LP Market Maker Types
 // ==========================================
 
-export type LpStage = "PUMP" | "SIDEWAYS" | "DUMP";
+export type LpStage = "PUMP" | "SIDEWAYS" | "DUMP" | "RWA_STABLE";
+
+export type LpCategory = "RWA" | "MEME" | "BLUECHIP";
 
 export type LpRangeSegment = {
   segmentName: string; // e.g. "Core Fee Zone (40%)", "Chase Upper (35%)", "Buffer Lower (25%)"
@@ -467,7 +469,7 @@ export type LpRangeSegment = {
   upperTick: number;
   capitalSharePct: number; // e.g. 40
   capitalAllocatedUsd: number;
-  tokenId?: string; // On-chain Uniswap V3 NFT tokenId if live
+  tokenId?: string; // On-chain Uniswap V3/V4 NFT tokenId if live
   inRange: boolean;
 };
 
@@ -495,11 +497,27 @@ export type LpConfig = {
   sidewaysCoreWidthPct: number; // default: 15% (±15%)
   sidewaysDefendSharePct: number; // default: 30% (15% above + 15% below)
 
+  // RWA Tokenized Equities Settings
+  rwaBandWidthPct: number; // default: 10% (±10% narrower for stocks)
+  rwaCapitalUsd: number; // default: 100 USDG for RWA
+
+  // Dynamic Rebalancing & IL Stop Loss
+  enableAutoRebalance: boolean; // default: true
+  rebalanceDriftThresholdPct: number; // default: 12% (drift > 12% triggers rebalance)
+  maxRebalancesPerPosition: number; // default: 3
+  netPnlStopLossPct: number; // default: -8% (if net pnl < -8%, auto exit)
+
   // Risk & Profit Management
   withdrawPrincipalFeeRatio: number; // default: 0.35 (Withdraw principal when fee >= 35%)
   volumeDropExitThresholdPct: number; // default: 50% (Exit when 5m volume drops >50%)
   stopLossPriceDropPct: number; // default: -25% (Exit if price drops below lowest buffer)
   maxHoldMinutes: number; // default: 720 (12 hours)
+  
+  // High Yield LP Opportunity Scanner Settings
+  minOpportunityFeeRatePct: number; // default: 80% daily fee rate
+  minOpportunityVolume2hUsd: number; // default: 10000 USD
+  maxOpportunityActiveLiqUsd: number; // default: 80000 USD
+  opportunityAlertCooldownMin: number; // default: 60 minutes
   
   larkNotification: boolean;
   webhookUrl?: string;
@@ -532,8 +550,12 @@ export type LpPosition = {
   name?: string;
   chain: "robinhood" | "bsc" | string;
   pairAddress?: string;
-  feeTier: number; // e.g. 10000 (1%)
+  feeTier: number; // e.g. 10000 (1%), 40000 (4%), 200000 (20%)
   stage: LpStage;
+  category?: LpCategory;
+  isRwa?: boolean;
+  stockSymbol?: string;
+  
   entryTime: string;
   entryPriceUsd: number;
   initialUsdInvested: number;
@@ -543,6 +565,12 @@ export type LpPosition = {
   latestVolume5m: number;
   volumeDropPct: number;
   
+  // Concentrated Liquidity Metrics
+  activeBandLiquidityUsd: number; // ±15% band depth
+  capitalEfficiencyRatio: number; // e.g. 7.5x ~ 15x
+  dailyFeeRatePct: number; // Current calculated daily fee yield %
+  holdVsLpScore: number; // Score 0-100 indicating LP advantage over pure hold
+  
   ranges: LpRangeSegment[];
   
   feeEarnedUsd: number;
@@ -550,6 +578,9 @@ export type LpPosition = {
   impermanentLossUsd: number;
   netPnlUsd: number;
   netPnlPct: number;
+  
+  rebalanceCount: number;
+  lastRebalanceTime?: string;
   
   status:
     | "ACTIVE"
@@ -576,4 +607,59 @@ export type LpState = {
   winCount: number;
   lossCount: number;
   winRatePct: number;
+  lastOpportunityScanTime?: string;
 };
+
+// ==========================================
+// Robinhood Uniswap V4 Pool & Barker Index Types
+// ==========================================
+
+export type V4PoolItem = {
+  poolId: string;
+  pairAddress: string;
+  token0Symbol: string;
+  token0Address: string;
+  token1Symbol: string;
+  token1Address: string;
+  pairName: string; // e.g. "CANAL/NVDA", "SHROOM/USDG"
+  category: LpCategory;
+  isRwa: boolean;
+  stockSymbol?: string;
+  feeTierPct: number; // e.g. 1.0, 4.0, 20.0
+  feeTierBps: number; // e.g. 10000, 40000
+  isDynamicHook?: boolean;
+  hookDescription?: string;
+  
+  currentPriceUsd: number;
+  priceChange1hPct: number;
+  
+  activeBandLiquidityUsd: number; // ±15% active band depth
+  totalLiquidityUsd: number; // Total pool TVL
+  volume2hUsd: number;
+  volume24hUsd: number;
+  fee2hUsd: number;
+  fee24hUsd: number;
+  
+  dailyFeeRatePct: number; // Calculated daily fee rate (2H fees * 12 / activeBandLiq)
+  annualizedAprPct: number; // dailyFeeRatePct * 365
+  capitalEfficiency: number; // concentration multiplier
+  healthScore: number; // 0-100 overall score considering volume, depth, fee, IL risk
+  
+  createdAt?: string;
+  isNewPool?: boolean; // Pool created within last 24 hours
+  barkerUrl?: string;
+  explorerUrl?: string;
+};
+
+export type V4MarketSummary = {
+  indexedPoolsCount: number;
+  total24hVolumeUsd: number;
+  total24hFeeUsd: number;
+  avgDailyFeeRatePct: number;
+  topYieldPools: V4PoolItem[];
+  rwaPools: V4PoolItem[];
+  memePools: V4PoolItem[];
+  newPools: V4PoolItem[];
+  updatedAt: string;
+};
+
