@@ -250,5 +250,80 @@ export const closeAllPositions = createServerFn({ method: "POST" }).handler(
   },
 );
 
+// ==========================================
+// V3 Asymmetric LP Server Actions
+// ==========================================
 
+export const getLpState = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { lpService } = await import("./lp.server");
+    return lpService.getState();
+  },
+);
 
+export const updateLpConfig = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      dryRun?: boolean;
+      autoLpEnabled?: boolean;
+      capitalPerPoolUsd?: number;
+      maxActivePools?: number;
+      minVolumeToLiquidityRatio?: number;
+      preferredFeeTier?: number;
+      pumpCoreSharePct?: number;
+      pumpCoreUpPct?: number;
+      pumpChaseSharePct?: number;
+      pumpChaseUpPct?: number;
+      pumpBufferSharePct?: number;
+      pumpBufferDownPct?: number;
+      sidewaysCoreSharePct?: number;
+      sidewaysCoreWidthPct?: number;
+      withdrawPrincipalFeeRatio?: number;
+      volumeDropExitThresholdPct?: number;
+      stopLossPriceDropPct?: number;
+      maxHoldMinutes?: number;
+      larkNotification?: boolean;
+      webhookUrl?: string;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { lpService } = await import("./lp.server");
+    return lpService.updateConfig(data);
+  });
+
+export const openManualLp = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      tokenAddress: string;
+      symbol: string;
+      name?: string;
+      chain: string;
+      priceUsd: number;
+      liquidityUsd: number;
+      volume5m: number;
+      stage: "PUMP" | "SIDEWAYS";
+      customCapitalUsd?: number;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { lpService } = await import("./lp.server");
+    return lpService.openLpPosition(data);
+  });
+
+export const closeLpPosition = createServerFn({ method: "POST" })
+  .validator((input: { positionId: string }) => input)
+  .handler(async ({ data }) => {
+    const { lpService } = await import("./lp.server");
+    return lpService.closePosition(
+      data.positionId,
+      "CLOSED_MANUAL",
+      "用户控制面板手动撤池结项",
+    );
+  });
+
+export const closeAllLpPositions = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const { lpService } = await import("./lp.server");
+    return lpService.closeAllPositions();
+  },
+);
