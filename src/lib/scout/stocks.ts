@@ -45,6 +45,16 @@ export async function fetchStockAssets(): Promise<StockAsset[]> {
   }
 }
 
+export function matchStock(
+  pairToken: string | null,
+  stocks: StockAsset[],
+): StockAsset | null {
+  if (!pairToken) return null;
+  const p = pairToken.toLowerCase();
+  if (p === ZERO.toLowerCase()) return null;
+  return stocks.find((s) => s.contract.toLowerCase() === p) ?? null;
+}
+
 export const COMMON_EQUITY_SYMBOLS = new Set([
   "NVDA",
   "TSLA",

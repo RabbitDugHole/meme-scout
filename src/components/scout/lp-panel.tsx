@@ -7,17 +7,22 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Clock,
+  Coins,
   Copy,
   DollarSign,
   ExternalLink,
+  Flame,
   Layers,
+  Landmark,
   Pause,
   Play,
+  Radar,
   RefreshCw,
   Settings,
   ShieldAlert,
   ShieldCheck,
   Sliders,
+  Sparkles,
   Target,
   Trash2,
   TrendingDown,
@@ -32,9 +37,13 @@ import {
   closeLpPosition,
   getLpState,
   updateLpConfig,
+  getV4MarketSummary,
+  triggerV4RadarScan,
+  openManualLp,
+  rebalanceLpPositionAction,
 } from "@/lib/scout/actions";
 import { formatUsd, shortAddr } from "@/lib/scout/format";
-import type { LpPosition, LpRangeSegment } from "@/lib/scout/types";
+import type { LpPosition, LpRangeSegment, V4PoolItem } from "@/lib/scout/types";
 import { cn } from "@/lib/utils";
 
 export function LpPanel({
@@ -44,12 +53,20 @@ export function LpPanel({
 }) {
   const qc = useQueryClient();
   const [showConfig, setShowConfig] = useState(false);
+  const [radarFilter, setRadarFilter] = useState<"top" | "rwa" | "meme" | "new">("top");
 
   // Fetch LP State
   const { data: lpData, isLoading, refetch } = useQuery({
     queryKey: ["lpState"],
     queryFn: () => getLpState(),
     refetchInterval: 5000,
+  });
+
+  // Fetch Barker V4 Market Summary
+  const { data: v4Summary, isLoading: isV4Loading, refetch: refetchV4 } = useQuery({
+    queryKey: ["v4MarketSummary"],
+    queryFn: () => getV4MarketSummary(),
+    refetchInterval: 15000,
   });
 
   // Config Form State
@@ -63,6 +80,14 @@ export function LpPanel({
   const [cfgStopLossDrop, setCfgStopLossDrop] = useState(-25);
   const [cfgMaxHoldMin, setCfgMaxHoldMin] = useState(720);
 
+  // New V4 & RWA & Rebalance config states
+  const [cfgRwaWidth, setCfgRwaWidth] = useState(10);
+  const [cfgRwaCapital, setCfgRwaCapital] = useState(100);
+  const [cfgAutoRebalance, setCfgAutoRebalance] = useState(true);
+  const [cfgRebalanceDrift, setCfgRebalanceDrift] = useState(12);
+  const [cfgNetPnlStopLoss, setCfgNetPnlStopLoss] = useState(-8);
+  const [cfgMinOppFeeRate, setCfgMinOppFeeRate] = useState(80);
+
   // Sync form state when config loads
   const [hasSynced, setHasSynced] = useState(false);
   if (config && !hasSynced) {
@@ -74,6 +99,12 @@ export function LpPanel({
     setCfgVolDropExit(config.volumeDropExitThresholdPct);
     setCfgStopLossDrop(config.stopLossPriceDropPct);
     setCfgMaxHoldMin(config.maxHoldMinutes);
+    if (config.rwaBandWidthPct !== undefined) setCfgRwaWidth(config.rwaBandWidthPct);
+    if (config.rwaCapitalUsd !== undefined) setCfgRwaCapital(config.rwaCapitalUsd);
+    if (config.enableAutoRebalance !== undefined) setCfgAutoRebalance(config.enableAutoRebalance);
+    if (config.rebalanceDriftThresholdPct !== undefined) setCfgRebalanceDrift(config.rebalanceDriftThresholdPct);
+    if (config.netPnlStopLossPct !== undefined) setCfgNetPnlStopLoss(config.netPnlStopLossPct);
+    if (config.minOpportunityFeeRatePct !== undefined) setCfgMinOppFeeRate(config.minOpportunityFeeRatePct);
     setHasSynced(true);
   }
 
@@ -82,12 +113,70 @@ export function LpPanel({
     mutationFn: (data: any) => updateLpConfig({ data }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["lpState"] });
-      toast.success("LP 做市配置已成功更新");
+      toast.success("做市策略与风控配置已成功保存更新");
     },
     onError: (err: any) => {
       toast.error(`更新配置失败: ${err?.message || err}`);
     },
   });
+
+  // Radar Scan Mutation
+  const scanRadarMut = useMutation({
+    mutationFn: () => triggerV4RadarScan(),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["v4MarketSummary"] });
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      toast.success(
+        `V4 雷达扫描完成: 锁定 ${res.opportunitiesCount} 个高收益做市机会, ${res.newPoolsCount} 个新上线池`,
+      );
+    },
+    onError: (err: any) => {
+      toast.error(`雷达扫描失败: ${err?.message || err}`);
+    },
+  });
+
+  // Rebalance Mutation
+  const rebalanceMut = useMutation({
+    mutationFn: (positionId: string) => rebalanceLpPositionAction({ data: { positionId } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      toast.success("已完成智能动态移仓，区间已重新中枢化！");
+    },
+    onError: (err: any) => {
+      toast.error(`移仓失败: ${err?.message || err}`);
+    },
+  });
+
+  // 1-Click LP Mutation from Radar
+  const quickOpenV4Mut = useMutation({
+    mutationFn: (pool: V4PoolItem) =>
+      openManualLp({
+        data: {
+          tokenAddress: pool.token0Address,
+          symbol: pool.token0Symbol,
+          name: pool.pairName,
+          chain: "robinhood",
+          pairAddress: pool.pairAddress,
+          feeTier: pool.feeTierBps,
+          priceUsd: pool.currentPriceUsd,
+          liquidityUsd: pool.totalLiquidityUsd,
+          volume5m: pool.volume2hUsd / 24,
+          stage: pool.isRwa ? "RWA_STABLE" : "SIDEWAYS",
+          isRwa: pool.isRwa,
+          stockSymbol: pool.stockSymbol,
+          category: pool.category,
+          activeBandLiquidityUsd: pool.activeBandLiquidityUsd,
+        },
+      }),
+    onSuccess: (pos) => {
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      toast.success(`已成功为 $${pos.symbol} 建立做市头寸！`);
+    },
+    onError: (err: any) => {
+      toast.error(`快速建仓失败: ${err?.message || err}`);
+    },
+  });
+
 
   // Close Position Mutation
   const closePosMut = useMutation({
@@ -331,10 +420,78 @@ export function LpPanel({
               />
             </div>
 
+            {/* Param 8: RWA Band Width */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">美股 RWA 窄带宽度 (±%)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgRwaWidth}
+                onChange={(e) => setCfgRwaWidth(Number(e.target.value))}
+              />
+            </div>
+
+            {/* Param 9: RWA Capital */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">RWA 单池资金 (USDG)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgRwaCapital}
+                onChange={(e) => setCfgRwaCapital(Number(e.target.value))}
+              />
+            </div>
+
+            {/* Param 10: Dynamic Rebalance */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">智能动态移仓自愈</label>
+              <select
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgAutoRebalance ? "on" : "off"}
+                onChange={(e) => setCfgAutoRebalance(e.target.value === "on")}
+              >
+                <option value="on">✅ 开启 (偏离区间自动中枢化)</option>
+                <option value="off">❌ 关闭 (保持静态区间)</option>
+              </select>
+            </div>
+
+            {/* Param 11: Rebalance Drift */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">移仓偏离触发阈值 (±%)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgRebalanceDrift}
+                onChange={(e) => setCfgRebalanceDrift(Number(e.target.value))}
+              />
+            </div>
+
+            {/* Param 12: Net PnL Stop Loss */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">净盈亏硬止损线 (%)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgNetPnlStopLoss}
+                onChange={(e) => setCfgNetPnlStopLoss(Number(e.target.value))}
+              />
+            </div>
+
+            {/* Param 13: Radar Opportunity Min Daily Fee */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">雷达机会报警日费率 (%/天)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgMinOppFeeRate}
+                onChange={(e) => setCfgMinOppFeeRate(Number(e.target.value))}
+              />
+            </div>
+
             {/* Actions */}
-            <div className="flex items-end gap-2">
+            <div className="flex items-end gap-2 col-span-1 sm:col-span-2 md:col-span-3">
               <Button
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs h-8"
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs h-8 font-semibold"
                 onClick={() =>
                   updateConfigMut.mutate({
                     dryRun: cfgDryRun,
@@ -345,16 +502,240 @@ export function LpPanel({
                     volumeDropExitThresholdPct: cfgVolDropExit,
                     stopLossPriceDropPct: cfgStopLossDrop,
                     maxHoldMinutes: cfgMaxHoldMin,
+                    rwaBandWidthPct: cfgRwaWidth,
+                    rwaCapitalUsd: cfgRwaCapital,
+                    enableAutoRebalance: cfgAutoRebalance,
+                    rebalanceDriftThresholdPct: cfgRebalanceDrift,
+                    netPnlStopLossPct: cfgNetPnlStopLoss,
+                    minOpportunityFeeRatePct: cfgMinOppFeeRate,
                   })
                 }
                 disabled={updateConfigMut.isPending}
               >
-                保存策略配置
+                保存全部策略与风控配置
               </Button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Robinhood V4 Barker Market Radar Section */}
+      <div className="flex flex-col gap-3 rounded-xl border border-indigo-500/30 bg-gradient-to-b from-indigo-950/20 to-background p-4">
+        {/* Radar Header */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
+          <div className="flex items-center gap-2">
+            <Radar className="size-5 text-indigo-400 animate-pulse" />
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-foreground">
+                  Robinhood V4 做市机会雷达 (Barker 实时做市情报)
+                </h3>
+                <Badge variant="outline" className="text-[10px] text-indigo-400 border-indigo-500/30">
+                  全网索引 {v4Summary?.indexedPoolsCount ?? 0} 个池
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                实时追踪 Robinhood Chain 上的 Uniswap V4 集中流动性日费率、活跃带集中深度与美股 RWA / 热门 Meme 做市机会
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs border-indigo-500/30 hover:bg-indigo-500/10 text-indigo-300"
+              onClick={() => scanRadarMut.mutate()}
+              disabled={scanRadarMut.isPending}
+            >
+              <Sparkles className="size-3 mr-1" />
+              {scanRadarMut.isPending ? "扫描中..." : "触发即时扫描"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-muted-foreground"
+              onClick={() => refetchV4()}
+            >
+              <RefreshCw className="size-3" />
+            </Button>
+            <a
+              href="https://app.barker.money/raid/robinhood"
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-indigo-400 hover:underline flex items-center gap-1 ml-1"
+            >
+              Barker 终端 <ExternalLink className="size-3" />
+            </a>
+          </div>
+        </div>
+
+        {/* Global Market Mini Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-secondary/30 rounded-lg p-2.5 text-xs">
+          <div>
+            <span className="text-muted-foreground">24H 市场成交总额:</span>
+            <div className="font-bold text-foreground text-sm mt-0.5">
+              ${formatUsd(v4Summary?.total24hVolumeUsd ?? 406000000)}
+            </div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">24H 产出过路费:</span>
+            <div className="font-bold text-emerald-400 text-sm mt-0.5">
+              +${formatUsd(v4Summary?.total24hFeeUsd ?? 2950000)}
+            </div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">市场平均日费率:</span>
+            <div className="font-bold text-amber-400 text-sm mt-0.5">
+              +{(v4Summary?.avgDailyFeeRatePct ?? 0).toFixed(1)}%/天
+            </div>
+          </div>
+          <div>
+            <span className="text-muted-foreground">超高收益池数量:</span>
+            <div className="font-bold text-cyan-400 text-sm mt-0.5">
+              {(v4Summary?.topYieldPools ?? []).filter((p) => p.dailyFeeRatePct >= 100).length} 个 (&gt;100%/天)
+            </div>
+          </div>
+        </div>
+
+        {/* Filter Tabs */}
+        <div className="flex flex-wrap items-center gap-2 mt-1">
+          <Button
+            size="sm"
+            variant={radarFilter === "top" ? "default" : "outline"}
+            className="h-7 text-xs"
+            onClick={() => setRadarFilter("top")}
+          >
+            <Flame className="size-3 mr-1 text-amber-400" />
+            Top 高收益做市池 ({v4Summary?.topYieldPools.length ?? 0})
+          </Button>
+          <Button
+            size="sm"
+            variant={radarFilter === "rwa" ? "default" : "outline"}
+            className="h-7 text-xs"
+            onClick={() => setRadarFilter("rwa")}
+          >
+            <Landmark className="size-3 mr-1 text-purple-400" />
+            🏛️ 美股 RWA 专区 ({v4Summary?.rwaPools.length ?? 0})
+          </Button>
+          <Button
+            size="sm"
+            variant={radarFilter === "meme" ? "default" : "outline"}
+            className="h-7 text-xs"
+            onClick={() => setRadarFilter("meme")}
+          >
+            <Coins className="size-3 mr-1 text-cyan-400" />
+            🐸 Meme 热门池 ({v4Summary?.memePools.length ?? 0})
+          </Button>
+          <Button
+            size="sm"
+            variant={radarFilter === "new" ? "default" : "outline"}
+            className="h-7 text-xs"
+            onClick={() => setRadarFilter("new")}
+          >
+            <Sparkles className="size-3 mr-1 text-emerald-400" />
+            ✨ 24H 新上线池 ({v4Summary?.newPools.length ?? 0})
+          </Button>
+        </div>
+
+        {/* Filtered Pools Table */}
+        <div className="overflow-x-auto rounded-lg border border-border/60">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-secondary/40 text-muted-foreground border-b border-border/60">
+              <tr>
+                <th className="py-2 px-3">交易对 / 费率</th>
+                <th className="py-2 px-3">日费率 (2H折算)</th>
+                <th className="py-2 px-3">折合年化 APR</th>
+                <th className="py-2 px-3">±15% 活跃集中深度</th>
+                <th className="py-2 px-3">2H 成交额 / 费</th>
+                <th className="py-2 px-3">资本效率 / 健康度</th>
+                <th className="py-2 px-3 text-right">快捷操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/40">
+              {((() => {
+                if (!v4Summary) return [];
+                if (radarFilter === "rwa") return v4Summary.rwaPools;
+                if (radarFilter === "meme") return v4Summary.memePools;
+                if (radarFilter === "new") return v4Summary.newPools;
+                return v4Summary.topYieldPools;
+              })()).slice(0, 15).map((pool) => (
+                <tr key={pool.poolId} className="hover:bg-secondary/20 transition-colors">
+                  <td className="py-2 px-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-foreground text-xs">{pool.pairName}</span>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "text-[9px] px-1 py-0",
+                          pool.feeTierPct >= 4 ? "border-amber-500/40 text-amber-400" : "border-border",
+                        )}
+                      >
+                        {pool.feeTierPct}%
+                      </Badge>
+                      {pool.isRwa && (
+                        <Badge className="text-[9px] px-1 py-0 bg-purple-500/10 text-purple-400 border border-purple-500/30">
+                          美股 {pool.stockSymbol}
+                        </Badge>
+                      )}
+                      {pool.isNewPool && (
+                        <Badge className="text-[9px] px-1 py-0 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                          新池
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                      <span>
+                        1h: {pool.priceChange1hPct >= 0 ? "+" : ""}
+                        {pool.priceChange1hPct.toFixed(1)}%
+                      </span>
+                      <span>· CA: {shortAddr(pool.token0Address)}</span>
+                    </div>
+                  </td>
+                  <td className="py-2 px-3">
+                    <span className="font-bold text-emerald-400 text-sm">
+                      +{pool.dailyFeeRatePct.toFixed(1)}%/天
+                    </span>
+                  </td>
+                  <td className="py-2 px-3 text-cyan-400 font-semibold">
+                    +{pool.annualizedAprPct.toLocaleString()}%
+                  </td>
+                  <td className="py-2 px-3">
+                    <div className="font-medium text-foreground">
+                      ${pool.activeBandLiquidityUsd.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      全池: ${pool.totalLiquidityUsd.toLocaleString()}
+                    </div>
+                  </td>
+                  <td className="py-2 px-3">
+                    <div className="text-foreground">${pool.volume2hUsd.toLocaleString()}</div>
+                    <div className="text-[10px] text-emerald-400">
+                      费: +${pool.fee2hUsd.toLocaleString()}
+                    </div>
+                  </td>
+                  <td className="py-2 px-3">
+                    <div className="text-xs font-semibold text-blue-400">
+                      {pool.capitalEfficiency.toFixed(1)}x 乘数
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">健康分: {pool.healthScore}/100</div>
+                  </td>
+                  <td className="py-2 px-3 text-right">
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs bg-blue-600 hover:bg-blue-500 text-white"
+                      onClick={() => quickOpenV4Mut.mutate(pool)}
+                      disabled={quickOpenV4Mut.isPending}
+                    >
+                      一键做市
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {/* Active LP Positions Section */}
       <div className="flex flex-col gap-3">
@@ -362,7 +743,7 @@ export function LpPanel({
           <div className="flex items-center gap-2">
             <Zap className="size-4 text-blue-400" />
             <h3 className="text-sm font-semibold text-foreground">
-              当前做市池 ({activePositions.length})
+              当前活跃做市池 ({activePositions.length})
             </h3>
           </div>
           <div className="flex items-center gap-2">
@@ -404,6 +785,7 @@ export function LpPanel({
           <div className="grid grid-cols-1 gap-4">
             {activePositions.map((pos) => {
               const isPump = pos.stage === "PUMP";
+              const isRwa = pos.stage === "RWA_STABLE" || pos.isRwa;
               const isProfit = pos.netPnlUsd >= 0;
 
               return (
@@ -426,19 +808,38 @@ export function LpPanel({
                         variant="outline"
                         className={cn(
                           "text-[10px]",
-                          isPump ? "border-amber-500/40 text-amber-400 bg-amber-500/10" : "border-cyan-500/40 text-cyan-400 bg-cyan-500/10",
+                          isRwa
+                            ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
+                            : isPump
+                              ? "border-amber-500/40 text-amber-400 bg-amber-500/10"
+                              : "border-cyan-500/40 text-cyan-400 bg-cyan-500/10",
                         )}
                       >
-                        {isPump ? "🚀 拉升期偏上方多段" : "⚖️ 横盘期Spot核心震荡"}
+                        {isRwa ? "🏛️ 美股 RWA 窄带" : isPump ? "🚀 拉升期偏上方多段" : "⚖️ 横盘期Spot核心震荡"}
                       </Badge>
                       {pos.status === "PRINCIPAL_SECURED" && (
                         <Badge variant="go" className="text-[10px]">
                           🛡️ 已保本锁定
                         </Badge>
                       )}
+                      {(pos.rebalanceCount || 0) > 0 && (
+                        <Badge variant="outline" className="text-[10px] border-blue-500/40 text-blue-400 bg-blue-500/10">
+                          🔄 移仓: 第 {pos.rebalanceCount} 次
+                        </Badge>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs px-2 border-blue-500/30 hover:bg-blue-500/10 text-blue-300"
+                        onClick={() => rebalanceMut.mutate(pos.id)}
+                        disabled={rebalanceMut.isPending}
+                      >
+                        <RefreshCw className="size-3 mr-1" />
+                        动态移仓
+                      </Button>
                       <Button
                         variant="outline"
                         size="sm"
@@ -464,7 +865,7 @@ export function LpPanel({
                   </div>
 
                   {/* Core Metrics Grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3 text-xs">
                     <div>
                       <span className="text-muted-foreground">入场/现价:</span>
                       <div className="font-semibold text-foreground mt-0.5">
@@ -472,9 +873,15 @@ export function LpPanel({
                       </div>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">做市本金:</span>
+                      <span className="text-muted-foreground">做市资金/活跃深度:</span>
                       <div className="font-semibold text-foreground mt-0.5">
-                        ${pos.initialUsdInvested.toFixed(2)} USDG
+                        ${pos.initialUsdInvested.toFixed(0)} / ${(pos.activeBandLiquidityUsd || 0).toLocaleString()}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">实时日费率 / 乘数:</span>
+                      <div className="font-bold text-amber-400 mt-0.5">
+                        +{(pos.dailyFeeRatePct || 0).toFixed(1)}%/天 ({pos.capitalEfficiencyRatio?.toFixed(1) ?? "7.5"}x)
                       </div>
                     </div>
                     <div>
@@ -484,7 +891,7 @@ export function LpPanel({
                       </div>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">净盈亏 (扣除IL):</span>
+                      <span className="text-muted-foreground">净盈亏 (扣IL):</span>
                       <div
                         className={cn(
                           "font-bold mt-0.5",
@@ -492,6 +899,12 @@ export function LpPanel({
                         )}
                       >
                         {isProfit ? "+" : ""}${pos.netPnlUsd.toFixed(2)} ({isProfit ? "+" : ""}{pos.netPnlPct.toFixed(1)}%)
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">做市优势分 (对比持币):</span>
+                      <div className="font-bold text-blue-400 mt-0.5">
+                        {pos.holdVsLpScore ?? 50} / 100
                       </div>
                     </div>
                   </div>
