@@ -453,5 +453,127 @@ export type TradeState = {
   winRatePct: number;
 };
 
+// ==========================================
+// V3 Asymmetric LP Market Maker Types
+// ==========================================
 
+export type LpStage = "PUMP" | "SIDEWAYS" | "DUMP";
 
+export type LpRangeSegment = {
+  segmentName: string; // e.g. "Core Fee Zone (40%)", "Chase Upper (35%)", "Buffer Lower (25%)"
+  minPriceUsd: number;
+  maxPriceUsd: number;
+  lowerTick: number;
+  upperTick: number;
+  capitalSharePct: number; // e.g. 40
+  capitalAllocatedUsd: number;
+  tokenId?: string; // On-chain Uniswap V3 NFT tokenId if live
+  inRange: boolean;
+};
+
+export type LpConfig = {
+  dryRun: boolean; // default: true
+  autoLpEnabled: boolean; // default: true
+  capitalPerPoolUsd: number; // default: 50 USDG per pool
+  maxActivePools: number; // default: 5
+  maxPoolSharePct: number; // default: 20% of pool active liquidity
+  minVolumeToLiquidityRatio: number; // default: 1.5 (e.g. 5m volume > 1.5x liquidity)
+  preferredFeeTier: number; // default: 10000 (1%)
+  maxTopHoldersPct: number; // default: 35%
+  minScoreThreshold: number; // default: 80
+  
+  // Asymmetric Range Settings (Pump Stage)
+  pumpCoreSharePct: number; // default: 40%
+  pumpCoreUpPct: number; // default: 30% (+30% from entry)
+  pumpChaseSharePct: number; // default: 35%
+  pumpChaseUpPct: number; // default: 100% (+30% to +100%)
+  pumpBufferSharePct: number; // default: 25%
+  pumpBufferDownPct: number; // default: -50% (-50% to 0%)
+
+  // Spot Concentrated Settings (Sideways Stage)
+  sidewaysCoreSharePct: number; // default: 70%
+  sidewaysCoreWidthPct: number; // default: 15% (±15%)
+  sidewaysDefendSharePct: number; // default: 30% (15% above + 15% below)
+
+  // Risk & Profit Management
+  withdrawPrincipalFeeRatio: number; // default: 0.35 (Withdraw principal when fee >= 35%)
+  volumeDropExitThresholdPct: number; // default: 50% (Exit when 5m volume drops >50%)
+  stopLossPriceDropPct: number; // default: -25% (Exit if price drops below lowest buffer)
+  maxHoldMinutes: number; // default: 720 (12 hours)
+  
+  larkNotification: boolean;
+  webhookUrl?: string;
+  walletAddress?: string;
+  hasRhKey: boolean;
+};
+
+export type LpTxRecord = {
+  id: string;
+  type:
+    | "MINT_LP"
+    | "COLLECT_FEE"
+    | "WITHDRAW_PRINCIPAL"
+    | "REBALANCE"
+    | "EXIT_FLASH";
+  timestamp: string;
+  txHash?: string;
+  details: string;
+  amountUsd?: number;
+  feeHarvestedUsd?: number;
+  dryRun: boolean;
+  status: "PENDING" | "CONFIRMED" | "FAILED";
+  error?: string;
+};
+
+export type LpPosition = {
+  id: string;
+  tokenAddress: string;
+  symbol: string;
+  name?: string;
+  chain: "robinhood" | "bsc" | string;
+  pairAddress?: string;
+  feeTier: number; // e.g. 10000 (1%)
+  stage: LpStage;
+  entryTime: string;
+  entryPriceUsd: number;
+  initialUsdInvested: number;
+  currentPriceUsd: number;
+  volume5mAtEntry: number;
+  liquidityAtEntry: number;
+  latestVolume5m: number;
+  volumeDropPct: number;
+  
+  ranges: LpRangeSegment[];
+  
+  feeEarnedUsd: number;
+  principalWithdrawnUsd: number;
+  impermanentLossUsd: number;
+  netPnlUsd: number;
+  netPnlPct: number;
+  
+  status:
+    | "ACTIVE"
+    | "PRINCIPAL_SECURED"
+    | "REBALANCING"
+    | "CLOSED_PROFIT"
+    | "CLOSED_STOPLOSS"
+    | "CLOSED_VOL_DROP"
+    | "CLOSED_TIMEOUT"
+    | "CLOSED_MANUAL";
+  exitReason?: string;
+  closeTime?: string;
+  txHistory: LpTxRecord[];
+};
+
+export type LpState = {
+  isRunning: boolean;
+  config: LpConfig;
+  walletAddress?: string;
+  activePositions: LpPosition[];
+  closedPositions: LpPosition[];
+  totalFeeEarnedUsd: number;
+  totalRealizedPnlUsd: number;
+  winCount: number;
+  lossCount: number;
+  winRatePct: number;
+};
