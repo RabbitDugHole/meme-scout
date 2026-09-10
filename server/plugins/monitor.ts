@@ -2,6 +2,7 @@ import { monitorService } from "../../src/lib/scout/monitor.server";
 import { tgMonitorService } from "../../src/lib/scout/tg-monitor.server";
 import { backtestEngine } from "../../src/lib/scout/backtest.server";
 import { tradeService } from "../../src/lib/scout/trade.server";
+import { lpService } from "../../src/lib/scout/lp.server";
 
 export default function () {
   console.log("🚀 [Nitro Plugin] Initializing Robinhood Meme Scout Background Monitor...");
@@ -12,4 +13,7 @@ export default function () {
   backtestEngine.start();
   console.log("⚡ [Nitro Plugin] Initializing Automated Trading & Risk Engine...");
   tradeService.start();
+  console.log("🌊 [Nitro Plugin] Initializing V3 Asymmetric LP Market Maker Engine...");
+  lpService.start();
 }
+

@@ -2,6 +2,7 @@ import { runScan } from "./scan.server";
 import { DEFAULT_LARK_WEBHOOK_URL, sendLarkAlarm, sendLarkTestMessage } from "./lark";
 import { backtestEngine } from "./backtest.server";
 import { tradeService } from "./trade.server";
+import { lpService } from "./lp.server";
 import type { AlarmRecord, Candidate, MonitorConfig, MonitorState } from "./types";
 import type { MemeIndicators } from "./indicators";
 
@@ -227,6 +228,20 @@ class PotentialMemeMonitor {
           timestamp: record.timestamp,
         }).catch((err) => {
           console.warn("[Monitor] 自动买入执行异常:", err?.message || err);
+        });
+
+        // Trigger Automated V3 LP Market Maker Engine
+        lpService.handleTokenAlert({
+          tokenAddress: candidate.address,
+          symbol: candidate.symbol,
+          name: candidate.name,
+          chain: "Robinhood Chain",
+          score: indicators.totalScore,
+          priceUsd: candidate.priceUsd ?? null,
+          liquidityUsd: candidate.liquidityUsd ?? null,
+          pairAddress: candidate.pairAddress,
+        }).catch((err) => {
+          console.warn("[Monitor] 自动 LP 做市建仓异常:", err?.message || err);
         });
 
         newAlarms.push(record);

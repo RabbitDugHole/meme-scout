@@ -9,6 +9,7 @@
 import { DEFAULT_LARK_WEBHOOK_URL, sendLarkTgAlarm } from "./lark";
 import { backtestEngine } from "./backtest.server";
 import { tradeService } from "./trade.server";
+import { lpService } from "./lp.server";
 import type {
   TgAlarmRecord,
   TgChannelConfig,
@@ -328,6 +329,22 @@ export class TelegramChannelMonitor {
           }).catch((err) => {
             console.warn("[TgMonitor] 自动买入执行异常:", err?.message || err);
           });
+
+          // Trigger Automated LP Market Maker Engine (if on Robinhood Chain)
+          if (post.chain.toLowerCase().includes("robinhood")) {
+            lpService.handleTokenAlert({
+              tokenAddress: post.address,
+              symbol: post.symbol,
+              name: post.name,
+              chain: post.chain,
+              score: evalResult.totalScore,
+              priceUsd: evalResult.liveData?.priceUsd ?? null,
+              liquidityUsd: evalResult.liveData?.liquidityUsd ?? null,
+              pairAddress: evalResult.liveData?.pairAddress,
+            }).catch((err) => {
+              console.warn("[TgMonitor] 自动 LP 做市建仓异常:", err?.message || err);
+            });
+          }
 
           newAlarmsCount++;
         }
