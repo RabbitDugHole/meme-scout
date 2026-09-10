@@ -1583,3 +1583,153 @@ export async function sendLarkComprehensiveLpReport(params: {
     return { ok: false, error: err?.message || String(err), timestamp };
   }
 }
+
+/**
+ * Format Lark LP Dynamic Rebalance Alert.
+ * CRITICAL: Must strictly start with prefix **
+ */
+export function formatLpRebalanceAlert(params: {
+  position: LpPosition;
+  oldPriceUsd: number;
+  newPriceUsd: number;
+  driftPct: number;
+  dryRun: boolean;
+}): string {
+  const p = params.position;
+  const modeBadge = params.dryRun ? "🛡️ 模拟实盘" : "🚀 链上实盘";
+  const catBadge = p.isRwa ? "🏛️ 美股 RWA" : "🐸 Meme 标的";
+
+  const rangeLines = p.ranges.map((r, i) => {
+    return `  ${i + 1}. ${r.segmentName}: $${r.minPriceUsd.toFixed(6)} ~ $${r.maxPriceUsd.toFixed(6)} (资金: $${r.capitalAllocatedUsd.toFixed(2)})`;
+  });
+
+  return [
+    `** 🔄【Robinhood V4 LP 智能动态移仓重平衡】**`,
+    ``,
+    `模式: ${modeBadge} | 属性: ${catBadge}`,
+    `时间: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `💎 做市标的: $${p.symbol}${p.name ? ` (${p.name})` : ""}`,
+    `📍 合约地址 (CA):`,
+    `\`\`\`bash`,
+    p.tokenAddress,
+    `\`\`\``,
+    `📐 价格动态偏离: ${params.driftPct.toFixed(1)}% (基准价 $${params.oldPriceUsd.toFixed(6)} -> 现价 $${params.newPriceUsd.toFixed(6)})`,
+    `🔄 移仓轮次: 第 ${p.rebalanceCount} 次智能自愈重平衡 (上限: 3次)`,
+    `💰 移仓前已锁入手续费: +$${p.feeEarnedUsd.toFixed(2)} USDG`,
+    `📈 当前净盈亏: ${p.netPnlUsd >= 0 ? "+" : ""}$${p.netPnlUsd.toFixed(2)} (${p.netPnlPct >= 0 ? "+" : ""}${p.netPnlPct.toFixed(1)}%)`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `📐 重构后全新流动性集中区间:`,
+    ...rangeLines,
+    ``,
+    `💡 机制说明: 价格偏离超过区间保护带时，系统自动撤单并以当前中枢价重新铺设流动性，确保持续处于高换手撮合摩擦区。`,
+  ].join("\n");
+}
+
+export async function sendLarkLpRebalanceAlert(params: {
+  position: LpPosition;
+  oldPriceUsd: number;
+  newPriceUsd: number;
+  driftPct: number;
+  dryRun: boolean;
+  webhookUrl?: string;
+}): Promise<LarkSendResult> {
+  const webhookUrl = params.webhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatLpRebalanceAlert(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ msg_type: "text", content: { text } }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return { ok: true, code: 0, msg: "success", timestamp };
+    }
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err), timestamp };
+  }
+}
+
+/**
+ * Format Lark V4 High-Yield LP Opportunity Alert (Barker Radar).
+ * CRITICAL: Must strictly start with prefix **
+ */
+export function formatLpOpportunityAlert(params: {
+  pool: import("./types").V4PoolItem;
+}): string {
+  const p = params.pool;
+  const catBadge = p.isRwa
+    ? `🏛️ 美股 RWA (${p.stockSymbol || "EQUITY"})`
+    : `🐸 Meme 爆发池`;
+  const tierBadge = `${p.feeTierPct}% 费率${p.feeTierPct >= 4 ? " (超高抽水🔥)" : ""}`;
+
+  return [
+    `** ⚡【Robinhood V4 超高收益做市机会雷达】**`,
+    ``,
+    `分类: ${catBadge}`,
+    `池子费率: ${tierBadge}`,
+    `时间: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `💎 交易对: ${p.pairName}`,
+    `📍 池子/合约地址 (CA):`,
+    `\`\`\`bash`,
+    p.token0Address,
+    `\`\`\``,
+    `🔥 实时日费率: 🟢 +${p.dailyFeeRatePct.toFixed(1)}%/天 (折合年化 APR: +${p.annualizedAprPct.toFixed(0)}%)`,
+    `⚡ ±15% 活跃集中深度: $${p.activeBandLiquidityUsd.toLocaleString()} (全池 TVL: $${p.totalLiquidityUsd.toLocaleString()})`,
+    `📊 2H 交易量: $${p.volume2hUsd.toLocaleString()} (2H 产出过路费: $${p.fee2hUsd.toLocaleString()})`,
+    `📈 1h 价格变动: ${p.priceChange1hPct >= 0 ? "+" : ""}${p.priceChange1hPct.toFixed(1)}%`,
+    `🛡️ 资本利用率乘数: ${p.capitalEfficiency.toFixed(1)}x`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `💡 做市机会分析:`,
+    `• 该池活跃挂单深度较浅而换手率极大，放入适量资金（如 $50~$100 USDG）即可占据高比例手续费分红。`,
+    p.isRwa
+      ? `• 【美股代币标的】底层资产为美股，暴跌归零风险极低，适宜做稳健大资金长期做市收租。`
+      : `• 【高摩擦 Meme 标的】建议开启智能移仓与 -8% 硬止损风控，避免剧烈单边无常损失。`,
+    ``,
+    `🔗 Barker 做市终端: ${p.barkerUrl || "https://app.barker.money/raid/robinhood"}`,
+  ].join("\n");
+}
+
+export async function sendLarkLpOpportunityAlert(params: {
+  pool: import("./types").V4PoolItem;
+  webhookUrl?: string;
+}): Promise<LarkSendResult> {
+  const webhookUrl = params.webhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatLpOpportunityAlert(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ msg_type: "text", content: { text } }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return { ok: true, code: 0, msg: "success", timestamp };
+    }
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err), timestamp };
+  }
+}
+
