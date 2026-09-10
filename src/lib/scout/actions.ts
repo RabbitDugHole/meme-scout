@@ -278,6 +278,16 @@ export const updateLpConfig = createServerFn({ method: "POST" })
       pumpBufferDownPct?: number;
       sidewaysCoreSharePct?: number;
       sidewaysCoreWidthPct?: number;
+      rwaBandWidthPct?: number;
+      rwaCapitalUsd?: number;
+      enableAutoRebalance?: boolean;
+      rebalanceDriftThresholdPct?: number;
+      maxRebalancesPerPosition?: number;
+      netPnlStopLossPct?: number;
+      minOpportunityFeeRatePct?: number;
+      minOpportunityVolume2hUsd?: number;
+      maxOpportunityActiveLiqUsd?: number;
+      opportunityAlertCooldownMin?: number;
       withdrawPrincipalFeeRatio?: number;
       volumeDropExitThresholdPct?: number;
       stopLossPriceDropPct?: number;
@@ -301,13 +311,28 @@ export const openManualLp = createServerFn({ method: "POST" })
       priceUsd: number;
       liquidityUsd: number;
       volume5m: number;
-      stage: "PUMP" | "SIDEWAYS";
+      stage: "PUMP" | "SIDEWAYS" | "RWA_STABLE";
+      feeTier?: number;
+      category?: "RWA" | "MEME" | "BLUECHIP";
+      isRwa?: boolean;
+      stockSymbol?: string;
+      activeBandLiquidityUsd?: number;
       customCapitalUsd?: number;
     }) => input,
   )
   .handler(async ({ data }) => {
     const { lpService } = await import("./lp.server");
     return lpService.openLpPosition(data);
+  });
+
+export const rebalanceLpPositionAction = createServerFn({ method: "POST" })
+  .validator((input: { positionId: string }) => input)
+  .handler(async ({ data }) => {
+    const { lpService } = await import("./lp.server");
+    return lpService.rebalancePosition(
+      data.positionId,
+      "控制面板手动触发智能移仓重平衡",
+    );
   });
 
 export const closeLpPosition = createServerFn({ method: "POST" })
@@ -327,6 +352,21 @@ export const closeAllLpPositions = createServerFn({ method: "POST" }).handler(
     return lpService.closeAllPositions();
   },
 );
+
+export const getV4MarketSummary = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { barkerService } = await import("./barker.server");
+    return barkerService.getMarketSummary();
+  },
+);
+
+export const triggerV4RadarScan = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const { v4PoolRadarService } = await import("./v4-pool-radar.server");
+    return v4PoolRadarService.scanForOpportunities();
+  },
+);
+
 
 // ==========================================
 // Google 2FA Authentication Server Actions
