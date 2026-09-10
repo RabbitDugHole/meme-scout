@@ -1,6 +1,8 @@
 import type {
   BacktestReport,
   Candidate,
+  LpPosition,
+  LpRangeSegment,
   TgTokenEvaluation,
   TradePosition,
   TradeTxRecord,
@@ -1312,5 +1314,272 @@ export async function sendLarkComprehensiveTradeReport(
   }
 }
 
+// ==========================================
+// V3 Asymmetric LP Market Maker Alerts
+// ==========================================
 
+/**
+ * Format Lark LP Open Alert.
+ * CRITICAL: Must strictly start with prefix **
+ */
+export function formatLpOpenAlert(params: {
+  position: LpPosition;
+  dryRun: boolean;
+}): string {
+  const p = params.position;
+  const modeBadge = params.dryRun
+    ? "🛡️ 模拟做市 (Dry-Run)"
+    : "🚀 链上真实做市 (Live)";
+  const stageName =
+    p.stage === "PUMP"
+      ? "🚀【拉升期】非对称偏上方多段布局"
+      : "⚖️【横盘期】Spot 核心箱体高密度震荡";
 
+  const rangeLines = p.ranges.map((r, i) => {
+    return `  ${i + 1}. ${r.segmentName}: $${r.minPriceUsd.toFixed(6)} ~ $${r.maxPriceUsd.toFixed(6)} (Tick [${r.lowerTick}, ${r.upperTick}], 资金: $${r.capitalAllocatedUsd.toFixed(2)})`;
+  });
+
+  return [
+    `** 🌊【Robinhood V3 非对称 LP 做市建仓启动】**`,
+    ``,
+    `模式: ${modeBadge}`,
+    `阶段: ${stageName}`,
+    `时间: ${p.entryTime.replace("T", " ").slice(0, 19)} UTC`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `💎 做市标的: $${p.symbol}${p.name ? ` (${p.name})` : ""}`,
+    `🌐 网络: ${p.chain.toUpperCase()} (Pons/Uniswap V3)`,
+    `📍 合约地址 (CA):`,
+    `\`\`\`bash`,
+    p.tokenAddress,
+    `\`\`\``,
+    `💵 做市本金: $${p.initialUsdInvested.toFixed(2)} USDG (池子深度: $${p.liquidityAtEntry.toLocaleString()})`,
+    `⚡ 5m成交/深度比: ${(p.volume5mAtEntry / Math.max(1, p.liquidityAtEntry)).toFixed(2)}x (5m成交: $${p.volume5mAtEntry.toLocaleString()})`,
+    `🎯 池子费率: ${(p.feeTier / 10000).toFixed(2)}%`,
+    `📍 入场现价: $${p.entryPriceUsd}`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `📐 V3 动态流动性分布区间:`,
+    ...rangeLines,
+    ``,
+    `🛡️ 动态风控与提润预案:`,
+    `• 💰 自动保本提润: 手续费累积达初始本金 35% 时自动提取本金锁定无风险`,
+    `• 🛑 极速熔断撤退: 5m 成交量环比骤降 >50% 或价格跌破最低防护下轨时，毫秒级 Flash Exit 撤池并一键兑回 USDG`,
+    ``,
+    `💡 提示: 点击代码块右上角可一键复制合约地址。`,
+  ].join("\n");
+}
+
+export async function sendLarkLpOpenAlert(params: {
+  position: LpPosition;
+  dryRun: boolean;
+  webhookUrl?: string;
+}): Promise<LarkSendResult> {
+  const webhookUrl = params.webhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatLpOpenAlert(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ msg_type: "text", content: { text } }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return { ok: true, code: 0, msg: "success", timestamp };
+    }
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err), timestamp };
+  }
+}
+
+/**
+ * Format Lark LP Collect & Principal Secured Alert.
+ */
+export function formatLpCollectAlert(params: {
+  position: LpPosition;
+  harvestedFeeUsd: number;
+  dryRun: boolean;
+}): string {
+  const p = params.position;
+  const modeBadge = params.dryRun ? "🛡️ 模拟实盘" : "🚀 链上实盘";
+
+  return [
+    `** 💰【Robinhood V3 LP 手续费提润与保本回撤】**`,
+    ``,
+    `模式: ${modeBadge}`,
+    `时间: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `💎 做市标的: $${p.symbol}${p.name ? ` (${p.name})` : ""}`,
+    `📍 合约地址 (CA):`,
+    `\`\`\`bash`,
+    p.tokenAddress,
+    `\`\`\``,
+    `💵 本次提润/保本回撤: +$${params.harvestedFeeUsd.toFixed(2)} USDG`,
+    `🏦 累计手续费产出: +$${p.feeEarnedUsd.toFixed(2)} USDG`,
+    `🛡️ 本金安全状态: ✅ 已提取本金 $${p.principalWithdrawnUsd.toFixed(2)}，当前头寸已转为【零风险纯利润收租状态】`,
+    `📈 当前净收益: +$${p.netPnlUsd.toFixed(2)} (${p.netPnlPct >= 0 ? "+" : ""}${p.netPnlPct.toFixed(1)}%)`,
+    ``,
+    `💡 提示: 保持仓位在箱体区间持续做市，直到 5m 交易量衰退触发离场。`,
+  ].join("\n");
+}
+
+export async function sendLarkLpCollectAlert(params: {
+  position: LpPosition;
+  harvestedFeeUsd: number;
+  dryRun: boolean;
+  webhookUrl?: string;
+}): Promise<LarkSendResult> {
+  const webhookUrl = params.webhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatLpCollectAlert(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ msg_type: "text", content: { text } }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return { ok: true, code: 0, msg: "success", timestamp };
+    }
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err), timestamp };
+  }
+}
+
+/**
+ * Format Lark Comprehensive LP Closure & PnL Report.
+ */
+export function formatComprehensiveLpReport(params: {
+  closedPosition: LpPosition;
+  allClosedPositions: LpPosition[];
+  activeCount: number;
+  totalRealizedPnlUsd: number;
+  totalFeeEarnedUsd: number;
+  winCount: number;
+  lossCount: number;
+  winRatePct: number;
+  dryRun: boolean;
+}): string {
+  const p = params.closedPosition;
+  const modeBadge = params.dryRun ? "🛡️ 模拟实盘 (Dry-Run)" : "🚀 链上实盘 (Live)";
+  const isPos = p.netPnlUsd >= 0;
+  const pnlSign = isPos ? "+" : "";
+
+  const reasonMap: Record<string, string> = {
+    CLOSED_PROFIT: "🎯 止盈收割离场 (大幅盈利且叙事放缓)",
+    CLOSED_STOPLOSS: "🛑 击穿下沿防护 (价格破位紧急熔断 Flash Exit)",
+    CLOSED_VOL_DROP: "📉 5m量能腰斩枯竭 (无流动摩擦立即撤出)",
+    CLOSED_TIMEOUT: "⏱️ 最大持仓超时 (达到设定生命周期)",
+    CLOSED_MANUAL: "👤 手动一键撤池",
+  };
+  const exitReason = reasonMap[p.status] || p.exitReason || "做市结项";
+
+  const entryMs = new Date(p.entryTime).getTime();
+  const closeMs = p.closeTime ? new Date(p.closeTime).getTime() : Date.now();
+  const holdMin = Math.max(1, Math.round((closeMs - entryMs) / 60000));
+  const holdStr = holdMin < 60 ? `${holdMin} 分钟` : `${(holdMin / 60).toFixed(1)} 小时`;
+
+  const historyLines = params.allClosedPositions.slice(0, 10).map((item, idx) => {
+    const itemIsPos = item.netPnlUsd >= 0;
+    const itemSign = itemIsPos ? "+" : "-";
+    const tag =
+      item.status === "CLOSED_PROFIT"
+        ? "🎯盈利"
+        : item.status === "CLOSED_VOL_DROP"
+          ? "📉量竭"
+          : item.status === "CLOSED_STOPLOSS"
+            ? "🛑止损"
+            : "撤池";
+    return `${idx + 1}. $${item.symbol}: ${itemSign}$${Math.abs(item.netPnlUsd).toFixed(2)} [${tag} · 手续费+$${item.feeEarnedUsd.toFixed(1)}]`;
+  });
+
+  return [
+    `** 📊【Robinhood V3 LP 做市清仓结项与收益战报】**`,
+    ``,
+    `模式: ${modeBadge}`,
+    `时间: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `🏁 本次结项标的:`,
+    `💎 代币标的: $${p.symbol}${p.name ? ` (${p.name})` : ""}`,
+    `🌐 做市公链: ${p.chain.toUpperCase()} (Pons/Uniswap V3)`,
+    `📍 合约地址 (CA):`,
+    `\`\`\`bash`,
+    p.tokenAddress,
+    `\`\`\``,
+    `⏱️ 做市周期: ${p.entryTime.slice(11, 19)} -> ${(p.closeTime || "").slice(11, 19)} (持仓 ${holdStr})`,
+    `🚪 撤池原因: ${exitReason}`,
+    `💵 初始做市资金: $${p.initialUsdInvested.toFixed(2)} USDG`,
+    `💰 手续费总收入: 🟢 +$${p.feeEarnedUsd.toFixed(2)} USDG`,
+    `📉 无常损失(IL): 🔴 -$${p.impermanentLossUsd.toFixed(2)} USDG`,
+    `🏆 最终净实现盈亏: ${isPos ? "🟢 +" : "🔴 -"}$${Math.abs(p.netPnlUsd).toFixed(2)} USDG (${pnlSign}${p.netPnlPct.toFixed(1)}%)`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `📈 全量 LP 做市胜率统计:`,
+    `• 累计结项总数: ${params.allClosedPositions.length} 个池子`,
+    `• 做市综合胜率: ${params.winRatePct.toFixed(1)}% (${params.winCount} 胜 / ${params.lossCount} 负)`,
+    `• 累计已收过路费: +$${params.totalFeeEarnedUsd.toFixed(2)} USDG`,
+    `• 累计净实现盈亏: ${params.totalRealizedPnlUsd >= 0 ? "+" : "-"}$${Math.abs(params.totalRealizedPnlUsd).toFixed(2)} USDG`,
+    `• 当前在做市池子: ${params.activeCount} 个`,
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━━━`,
+    `📜 近期做市记录 (近 ${historyLines.length} 笔):`,
+    ...(historyLines.length > 0 ? historyLines : ["(暂无其他历史记录)"]),
+    ``,
+    `💡 提示: 点击代码块右上角可一键复制合约地址；登录系统大盘可查看实时 LP 仓位与图表。`,
+  ].join("\n");
+}
+
+export async function sendLarkComprehensiveLpReport(params: {
+  closedPosition: LpPosition;
+  allClosedPositions: LpPosition[];
+  activeCount: number;
+  totalRealizedPnlUsd: number;
+  totalFeeEarnedUsd: number;
+  winCount: number;
+  lossCount: number;
+  winRatePct: number;
+  dryRun: boolean;
+  webhookUrl?: string;
+}): Promise<LarkSendResult> {
+  const webhookUrl = params.webhookUrl || DEFAULT_LARK_WEBHOOK_URL;
+  const timestamp = new Date().toISOString();
+  const text = formatComprehensiveLpReport(params);
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ msg_type: "text", content: { text } }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.code === 0 || data.StatusCode === 0)) {
+      return { ok: true, code: 0, msg: "success", timestamp };
+    }
+    return {
+      ok: false,
+      code: data.code ?? data.StatusCode ?? res.status,
+      msg: data.msg ?? data.StatusMessage ?? res.statusText,
+      timestamp,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err), timestamp };
+  }
+}
