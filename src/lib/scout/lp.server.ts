@@ -25,7 +25,6 @@ import {
   sendLarkComprehensiveLpReport,
   DEFAULT_LARK_WEBHOOK_URL,
 } from "./lark";
-import { fetchTokenPoolInfo } from "./dexscreener";
 
 // Robinhood Chain definition
 const robinhoodChain = defineChain({
@@ -265,7 +264,8 @@ export class LpService {
   }
 
   public static alignTick(tick: number, spacing: number = 200): number {
-    return Math.round(tick / spacing) * spacing;
+    const val = Math.round(tick / spacing) * spacing;
+    return Object.is(val, -0) ? 0 : val;
   }
 
   public static tickToPrice(tick: number): number {
@@ -416,9 +416,9 @@ export class LpService {
     }
 
     // Fetch pair info & check Volume/Liquidity ratio
-    const poolInfo = await fetchTokenPoolInfo(params.chain, params.tokenAddress);
+    const poolInfo = await this.fetchPoolDexData(params.tokenAddress);
     const liquidity = poolInfo?.liquidityUsd || params.liquidityUsd || 0;
-    const volume5m = poolInfo?.volume5m || params.volume5m || (poolInfo?.volumeH1 ? poolInfo.volumeH1 / 12 : 0);
+    const volume5m = poolInfo?.volume5m || params.volume5m || 0;
     const currentPrice = poolInfo?.priceUsd || params.priceUsd || 0;
 
     if (currentPrice <= 0 || liquidity <= 0) {
@@ -533,7 +533,7 @@ export class LpService {
     try {
       const nowMs = Date.now();
       for (const [posId, pos] of this.activePositions.entries()) {
-        const poolInfo = await fetchTokenPoolInfo(pos.chain, pos.tokenAddress);
+        const poolInfo = await this.fetchPoolDexData(pos.tokenAddress);
         const livePrice = poolInfo?.priceUsd || pos.currentPriceUsd;
         const liveVol5m = poolInfo?.volume5m || pos.latestVolume5m;
 
@@ -714,6 +714,50 @@ export class LpService {
       await this.closePosition(id, "CLOSED_MANUAL", "管理员一键撤池清仓");
     }
     return ids.length;
+  }
+
+  public async fetchPoolDexData(tokenAddress: string): Promise<{
+    priceUsd: number | null;
+    liquidityUsd: number | null;
+    volume5m: number | null;
+    priceChangeM5: number | null;
+    pairAddress?: string;
+    name?: string;
+  }> {
+    try {
+      const res = await fetch(
+        `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
+        {
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; MemeScout/1.0)" },
+          signal: AbortSignal.timeout(6000),
+        },
+      );
+      if (res.ok) {
+        const j = (await res.json().catch(() => ({}))) as any;
+        const pairs = Array.isArray(j.pairs) ? j.pairs : [];
+        if (pairs.length > 0) {
+          const p = pairs[0];
+          return {
+            priceUsd: Number(p.priceUsd) || null,
+            liquidityUsd: Number(p.liquidity?.usd) || null,
+            volume5m:
+              Number(p.volume?.m5) ||
+              (Number(p.volume?.h1) ? Number(p.volume.h1) / 12 : null),
+            priceChangeM5: Number(p.priceChange?.m5) || null,
+            pairAddress: p.pairAddress,
+            name: p.baseToken?.name,
+          };
+        }
+      }
+    } catch {
+      // Ignored
+    }
+    return {
+      priceUsd: null,
+      liquidityUsd: null,
+      volume5m: null,
+      priceChangeM5: null,
+    };
   }
 }
 
