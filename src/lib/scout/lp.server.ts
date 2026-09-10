@@ -261,6 +261,7 @@ export class LpService {
         console.warn("[LpService] 做市仓位巡检异常:", err?.message || err);
       });
     }, 30_000);
+    this.monitorTimer.unref();
 
     console.log(
       `🌊 [LpService] V3 非对称 LP 做市引擎已启动 (模式: ${this.config.dryRun ? "🛡️ 模拟做市 (Dry-Run)" : "🚀 真实链上 (Live)"}, 自动做市: ${this.config.autoLpEnabled ? "开启" : "暂停"})`,
