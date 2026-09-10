@@ -58,10 +58,12 @@ import {
   updateMonitorConfig,
   updateTgMonitorConfig,
   updateTradeConfig,
+  getLpState,
 } from "@/lib/scout/actions";
 import { formatUsd, shortAddr } from "@/lib/scout/format";
 import { DEFAULT_LARK_WEBHOOK_URL } from "@/lib/scout/lark";
 import { cn } from "@/lib/utils";
+import { LpPanel } from "./lp-panel";
 
 export function MonitorPanel({
   onInspect,
@@ -69,7 +71,16 @@ export function MonitorPanel({
   onInspect?: (address: string) => void;
 }) {
   const qc = useQueryClient();
-  const [subTab, setSubTab] = useState<"telegram" | "robinhood" | "backtest" | "trade">("telegram");
+  const [subTab, setSubTab] = useState<
+    "telegram" | "robinhood" | "backtest" | "trade" | "lp"
+  >("telegram");
+
+  // --- LP Engine Data ---
+  const { data: lpData } = useQuery({
+    queryKey: ["lpState"],
+    queryFn: () => getLpState(),
+    refetchInterval: 6000,
+  });
 
   // --- Robinhood Monitor Data ---
   const { data: status } = useQuery({
@@ -414,6 +425,29 @@ export function MonitorPanel({
           ) : (
             <Badge variant="outline" className="text-xs">
               {tradeData?.config?.dryRun ? "模拟盘" : "实盘"}
+            </Badge>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubTab("lp")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors",
+            subTab === "lp"
+              ? "bg-blue-500/15 text-blue-400 border border-blue-500/30"
+              : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+          )}
+        >
+          <Layers className="size-4" />
+          <span>V3 非对称 LP 做市 (Robinhood)</span>
+          {(lpData?.activePositions?.length ?? 0) > 0 ? (
+            <Badge variant="go" className="text-xs">
+              {lpData?.activePositions?.length} 个池子
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-xs">
+              {lpData?.config?.dryRun ? "模拟" : "实盘"}
             </Badge>
           )}
         </button>
@@ -2534,6 +2568,11 @@ export function MonitorPanel({
           </div>
         </div>
       )}
+
+      {/* ========================================================================= */}
+      {/* ROBINHOOD V3 ASYMMETRIC LP MARKET MAKER TAB CONTENT */}
+      {/* ========================================================================= */}
+      {subTab === "lp" && <LpPanel onInspect={onInspect} />}
     </div>
   );
 }

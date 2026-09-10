@@ -239,7 +239,7 @@ class PotentialMemeMonitor {
           score: indicators.totalScore,
           priceUsd: candidate.priceUsd ?? null,
           liquidityUsd: candidate.liquidityUsd ?? null,
-          pairAddress: candidate.pairAddress,
+          pairAddress: candidate.pairToken || undefined,
         }).catch((err) => {
           console.warn("[Monitor] 自动 LP 做市建仓异常:", err?.message || err);
         });
