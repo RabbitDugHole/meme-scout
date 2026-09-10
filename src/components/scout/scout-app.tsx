@@ -5,10 +5,12 @@ import {
   BookOpen,
   Eye,
   Landmark,
+  Lock,
   Radar,
   RefreshCw,
   Search,
 } from "lucide-react";
+import { toast } from "sonner";
 import { InspectPanel } from "@/components/scout/inspect-panel";
 import { MonitorPanel } from "@/components/scout/monitor-panel";
 import { Playbook } from "@/components/scout/playbook";
@@ -97,6 +99,20 @@ export function ScoutApp() {
           >
             <RefreshCw className={cn(rescan.isPending && "animate-spin")} />
             立即扫描
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs text-muted-foreground hover:text-foreground h-9"
+            onClick={() => {
+              localStorage.removeItem("rh_meme_2fa_token");
+              toast.success("已退出并锁定管理端");
+              window.location.reload();
+            }}
+            title="锁定管理端并退出当前会话"
+          >
+            <Lock className="size-3.5 mr-1 text-emerald-400" />
+            2FA 保护中
           </Button>
         </div>
       </header>

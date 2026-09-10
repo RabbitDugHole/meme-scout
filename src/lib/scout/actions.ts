@@ -327,3 +327,53 @@ export const closeAllLpPositions = createServerFn({ method: "POST" }).handler(
     return lpService.closeAllPositions();
   },
 );
+
+// ==========================================
+// Google 2FA Authentication Server Actions
+// ==========================================
+
+export const getTwoFactorStatus = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { twoFactorService } = await import("./two-factor.server");
+    return twoFactorService.getStatus();
+  },
+);
+
+export const createTwoFactorSetup = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const { twoFactorService } = await import("./two-factor.server");
+    return twoFactorService.createSetupSession();
+  },
+);
+
+export const confirmTwoFactorSetup = createServerFn({ method: "POST" })
+  .validator((input: { setupId: string; code: string }) => input)
+  .handler(async ({ data }) => {
+    const { twoFactorService } = await import("./two-factor.server");
+    return twoFactorService.confirmSetup(data);
+  });
+
+export const verifyTwoFactorLogin = createServerFn({ method: "POST" })
+  .validator((input: { code: string }) => input)
+  .handler(async ({ data }) => {
+    const { twoFactorService } = await import("./two-factor.server");
+    return twoFactorService.verifyLogin(data.code);
+  });
+
+export const validateTwoFactorSession = createServerFn({ method: "POST" })
+  .validator((input: { token?: string | null }) => input)
+  .handler(async ({ data }) => {
+    const { twoFactorService } = await import("./two-factor.server");
+    return {
+      valid: twoFactorService.validateSession(data.token),
+      isConfigured: twoFactorService.getStatus().isConfigured,
+    };
+  });
+
+export const resetTwoFactor = createServerFn({ method: "POST" })
+  .validator((input: { currentCode: string }) => input)
+  .handler(async ({ data }) => {
+    const { twoFactorService } = await import("./two-factor.server");
+    return twoFactorService.resetConfig(data.currentCode);
+  });
+
