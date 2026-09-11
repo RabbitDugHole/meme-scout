@@ -11,7 +11,11 @@ import {
   Copy,
   DollarSign,
   ExternalLink,
+  Eye,
+  EyeOff,
   Flame,
+  Info,
+  Key,
   Layers,
   Landmark,
   Pause,
@@ -27,6 +31,8 @@ import {
   Trash2,
   TrendingDown,
   TrendingUp,
+  Wallet,
+  X,
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -41,6 +47,9 @@ import {
   triggerV4RadarScan,
   openManualLp,
   rebalanceLpPositionAction,
+  importLpWalletAction,
+  disconnectLpWalletAction,
+  getLpWalletStatusAction,
 } from "@/lib/scout/actions";
 import { formatUsd, shortAddr } from "@/lib/scout/format";
 import type { LpPosition, LpRangeSegment, V4PoolItem } from "@/lib/scout/types";
@@ -202,11 +211,236 @@ export function LpPanel({
     },
   });
 
+  // Wallet Modal & Input State
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [inputPrivateKey, setInputPrivateKey] = useState("");
+  const [showPrivateKey, setShowPrivateKey] = useState(false);
+
+  // Wallet Import & Disconnect Mutations
+  const importWalletMut = useMutation({
+    mutationFn: (privateKey: string) => importLpWalletAction({ data: { privateKey } }),
+    onSuccess: (status) => {
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      toast.success(`做市钱包绑定成功！已就绪: ${shortAddr(status.walletAddress || "")}`);
+      setShowWalletModal(false);
+      setInputPrivateKey("");
+    },
+    onError: (err: any) => {
+      toast.error(`钱包导入失败: ${err?.message || err}`);
+    },
+  });
+
+  const disconnectWalletMut = useMutation({
+    mutationFn: () => disconnectLpWalletAction(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      toast.success("已解绑做市钱包，系统已恢复为模拟做市模式");
+    },
+    onError: (err: any) => {
+      toast.error(`解绑失败: ${err?.message || err}`);
+    },
+  });
+
+  const refreshBalanceMut = useMutation({
+    mutationFn: () => getLpWalletStatusAction(),
+    onSuccess: (status) => {
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      toast.success(`余额已更新: ${status.ethBalance} ETH · $${status.usdgBalance} USDG`);
+    },
+    onError: (err: any) => {
+      toast.error(`刷新余额失败: ${err?.message || err}`);
+    },
+  });
+
   const activePositions = lpData?.activePositions || [];
   const closedPositions = lpData?.closedPositions || [];
 
+  const walletStatus = lpData?.walletStatus;
+  const hasWallet = Boolean(lpData?.walletAddress || walletStatus?.hasWallet);
+  const walletAddr = lpData?.walletAddress || walletStatus?.walletAddress;
+  const ethBalance = walletStatus?.ethBalance ?? "0.0000";
+  const usdgBalance = walletStatus?.usdgBalance ?? "0.00";
+
   return (
     <div className="flex flex-col gap-6">
+      {/* Market-Making Wallet Status Banner & Import Entry */}
+      <div
+        className={cn(
+          "rounded-xl border p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors",
+          hasWallet
+            ? "border-emerald-500/30 bg-emerald-500/5"
+            : "border-amber-500/30 bg-amber-500/5",
+        )}
+      >
+        <div className="flex items-start md:items-center gap-3">
+          <div
+            className={cn(
+              "p-2.5 rounded-lg shrink-0",
+              hasWallet
+                ? "bg-emerald-500/20 text-emerald-400"
+                : "bg-amber-500/20 text-amber-400",
+            )}
+          >
+            <Wallet className="size-5" />
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-semibold text-foreground">
+                {hasWallet
+                  ? "LP 链上做市钱包已绑定"
+                  : "LP 实盘做市钱包未配置 (当前处于模拟保护模式)"}
+              </span>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-[10px]",
+                  hasWallet
+                    ? "text-emerald-400 border-emerald-500/30"
+                    : "text-amber-400 border-amber-500/30",
+                )}
+              >
+                Robinhood Chain (ID: 4663)
+              </Badge>
+              {hasWallet && (
+                <Badge
+                  variant={walletStatus?.isReadyForLive ? "outline" : "stop"}
+                  className="text-[10px]"
+                >
+                  {walletStatus?.isReadyForLive ? "🟢 实盘就绪" : "⚠️ 资金/燃料偏低"}
+                </Badge>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap mt-0.5">
+              {hasWallet ? (
+                <>
+                  <span>
+                    地址:{" "}
+                    <code className="font-mono text-foreground font-medium">
+                      {shortAddr(walletAddr || "")}
+                    </code>
+                  </span>
+                  <button
+                    className="text-muted-foreground hover:text-foreground transition-colors inline-flex items-center"
+                    onClick={() => {
+                      if (walletAddr) {
+                        navigator.clipboard.writeText(walletAddr);
+                        toast.success("已复制完整做市钱包地址");
+                      }
+                    }}
+                    title="复制完整地址"
+                  >
+                    <Copy className="size-3 ml-0.5" />
+                  </button>
+                  <a
+                    href={`https://robinhoodchain.blockscout.com/address/${walletAddr}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5"
+                    title="在区块浏览器查看"
+                  >
+                    <ExternalLink className="size-3" />
+                  </a>
+                  <span className="text-muted-foreground/40">|</span>
+                  <span>
+                    ⛽ ETH (Gas):{" "}
+                    <strong
+                      className={cn(
+                        Number(ethBalance) < 0.001
+                          ? "text-rose-400"
+                          : "text-foreground font-semibold",
+                      )}
+                    >
+                      {ethBalance} ETH
+                    </strong>
+                  </span>
+                  <span className="text-muted-foreground/40">|</span>
+                  <span>
+                    💵 USDG (做市本金):{" "}
+                    <strong
+                      className={cn(
+                        Number(usdgBalance) < 10
+                          ? "text-amber-400"
+                          : "text-foreground font-semibold",
+                      )}
+                    >
+                      ${usdgBalance}
+                    </strong>
+                  </span>
+                  {walletStatus?.warning && (
+                    <span className="text-[11px] text-amber-400 ml-1">
+                      ({walletStatus.warning})
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span>
+                  开启实盘做市需在 <strong>Robinhood Chain (ID: 4663)</strong> 准备{" "}
+                  <strong>ETH</strong> (Gas燃料) 与 <strong>USDG</strong> (做市本金)，点击右侧按钮导入独立子钱包私钥。
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+          {hasWallet ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1.5"
+                disabled={refreshBalanceMut.isPending}
+                onClick={() => refreshBalanceMut.mutate()}
+              >
+                <RefreshCw
+                  className={cn(
+                    "size-3.5",
+                    refreshBalanceMut.isPending && "animate-spin",
+                  )}
+                />
+                刷新余额
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1.5 text-blue-400 border-blue-500/30 hover:bg-blue-500/10"
+                onClick={() => setShowWalletModal(true)}
+              >
+                <Key className="size-3.5" />
+                重新导入 / 详情
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+                disabled={disconnectWalletMut.isPending}
+                onClick={() => {
+                  if (
+                    confirm(
+                      "确定要解绑当前 LP 做市钱包吗？解绑后系统将自动恢复为模拟做市模式以保障安全。",
+                    )
+                  ) {
+                    disconnectWalletMut.mutate();
+                  }
+                }}
+              >
+                解绑
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="default"
+              size="sm"
+              className="h-8 text-xs gap-1.5 bg-blue-600 hover:bg-blue-500 text-white shadow-sm"
+              onClick={() => setShowWalletModal(true)}
+            >
+              <Key className="size-3.5" />
+              🔑 导入 LP 做市钱包
+            </Button>
+          )}
+        </div>
+      </div>
+
       {/* Top Banner & KPI Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {/* Card 1: Engine Status */}
@@ -339,11 +573,30 @@ export function LpPanel({
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
             {/* Param 1: Dry-Run Mode */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-muted-foreground font-medium">实盘模式</label>
+              <label className="text-muted-foreground font-medium flex items-center justify-between">
+                <span>实盘模式</span>
+                {!hasWallet && (
+                  <button
+                    type="button"
+                    onClick={() => setShowWalletModal(true)}
+                    className="text-[10px] text-amber-400 hover:underline"
+                  >
+                    未配私钥
+                  </button>
+                )}
+              </label>
               <select
                 className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
                 value={cfgDryRun ? "dry" : "live"}
-                onChange={(e) => setCfgDryRun(e.target.value === "dry")}
+                onChange={(e) => {
+                  const isDry = e.target.value === "dry";
+                  if (!isDry && !hasWallet) {
+                    toast.warning("尚未绑定做市钱包，请先导入专属实盘子钱包私钥");
+                    setShowWalletModal(true);
+                    return;
+                  }
+                  setCfgDryRun(isDry);
+                }}
               >
                 <option value="dry">🛡️ 模拟实盘 (Dry-Run 无链上资金损耗)</option>
                 <option value="live">🚀 真实上链 (Live 需要配置私钥)</option>
@@ -1024,6 +1277,219 @@ export function LpPanel({
           </div>
         )}
       </div>
+
+      {/* Wallet Import & Detailed Requirements Modal */}
+      {showWalletModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="relative w-full max-w-2xl rounded-2xl border border-border bg-card p-6 shadow-2xl flex flex-col gap-5 max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-border/60 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-blue-500/20 text-blue-400">
+                  <Wallet className="size-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-foreground">
+                    导入 Robinhood Chain LP 做市钱包
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    配置 Uniswap V4 集中流动性做市私钥，开启自动化上链做市
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-lg text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setShowWalletModal(false);
+                  setInputPrivateKey("");
+                }}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+
+            {/* Wallet & Token Requirements Notice */}
+            <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 flex flex-col gap-3 text-xs">
+              <div className="flex items-center gap-2 font-semibold text-blue-400">
+                <Info className="size-4 shrink-0" />
+                <span>做市钱包与资产要求（请仔细阅读）</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-1">
+                {/* Network requirement */}
+                <div className="rounded-lg bg-card/70 border border-border/50 p-3 flex flex-col gap-1">
+                  <span className="font-semibold text-foreground flex items-center gap-1.5">
+                    🌐 目标区块链网络
+                  </span>
+                  <span className="text-muted-foreground">
+                    网络：<strong className="text-foreground">Robinhood Chain</strong> (EVM 兼容)
+                  </span>
+                  <span className="text-muted-foreground">
+                    Chain ID: <code className="text-foreground font-mono">4663</code>
+                  </span>
+                  <span className="text-muted-foreground">
+                    RPC: <code className="text-[11px] font-mono text-muted-foreground break-all">https://rpc.mainnet.chain.robinhood.com</code>
+                  </span>
+                </div>
+
+                {/* Gas requirement */}
+                <div className="rounded-lg bg-card/70 border border-border/50 p-3 flex flex-col gap-1">
+                  <span className="font-semibold text-foreground flex items-center gap-1.5">
+                    ⛽ 必须储备代币 1 (Gas 燃料)
+                  </span>
+                  <span className="text-muted-foreground">
+                    币种：<strong className="text-foreground">ETH</strong> (以太坊原生代币)
+                  </span>
+                  <span className="text-muted-foreground">
+                    用途：支付链上加池、调仓、提取手续费与撤池 Gas 费
+                  </span>
+                  <span className="text-muted-foreground">
+                    建议储备：<strong className="text-emerald-400">0.002 ~ 0.005 ETH</strong> (单笔 Gas 约 $0.002，足够数百次交互)
+                  </span>
+                </div>
+
+                {/* Capital requirement */}
+                <div className="rounded-lg bg-card/70 border border-border/50 p-3 flex flex-col gap-1">
+                  <span className="font-semibold text-foreground flex items-center gap-1.5">
+                    💵 必须储备代币 2 (做市本金)
+                  </span>
+                  <span className="text-muted-foreground">
+                    币种：<strong className="text-foreground">USDG</strong> (Canal USDG 稳定币)
+                  </span>
+                  <span className="text-muted-foreground">
+                    合约：<code className="text-[11px] font-mono break-all text-muted-foreground">0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168</code>
+                  </span>
+                  <span className="text-muted-foreground">
+                    建议储备：小资金推荐 <strong className="text-cyan-400">$50 ~ $200 USDG</strong>
+                  </span>
+                </div>
+
+                {/* Optional token requirement */}
+                <div className="rounded-lg bg-card/70 border border-border/50 p-3 flex flex-col gap-1">
+                  <span className="font-semibold text-foreground flex items-center gap-1.5">
+                    🏛️ 可选储备代币 3 (标的资产)
+                  </span>
+                  <span className="text-muted-foreground">
+                    币种：<strong className="text-foreground">CANAL / 目标美股 / 目标Meme</strong>
+                  </span>
+                  <span className="text-muted-foreground">
+                    说明：若仅持有 USDG，系统在集中流动性建仓时亦支持单边配置或自动兑换。
+                  </span>
+                </div>
+              </div>
+
+              {/* Security Warning */}
+              <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 flex items-start gap-2.5 text-rose-300">
+                <ShieldAlert className="size-4 shrink-0 mt-0.5 text-rose-400" />
+                <div className="flex flex-col gap-1">
+                  <span className="font-bold text-rose-200">
+                    安全隔离重要提醒（严格遵守）：
+                  </span>
+                  <span className="text-[11px] leading-relaxed">
+                    1. <strong>请务必生成全新的独立小额子钱包</strong>（仅转入用于测试做市的几十刀 ETH 和 USDG），<strong>严禁导入存有主力大额资产的主钱包！</strong><br />
+                    2. 私钥在服务器本地加密隔离保存（<code>data/lp-wallet.json</code>，权限 0600，且在 .gitignore 中永久防泄露），不经过任何第三方云端。
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Current wallet status if bound */}
+            {hasWallet && (
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 flex flex-col gap-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-emerald-400">当前已绑定做市钱包</span>
+                  <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">
+                    已连接
+                  </Badge>
+                </div>
+                <div className="font-mono text-sm text-foreground bg-secondary/50 p-2 rounded border border-border/50 break-all">
+                  {walletAddr}
+                </div>
+                <div className="flex items-center gap-4 text-muted-foreground mt-1">
+                  <span>⛽ ETH: <strong className="text-foreground">{ethBalance} ETH</strong></span>
+                  <span>💵 USDG: <strong className="text-foreground">${usdgBalance} USDG</strong></span>
+                </div>
+              </div>
+            )}
+
+            {/* Private key input form */}
+            <div className="flex flex-col gap-3">
+              <label className="text-xs font-semibold text-foreground flex items-center justify-between">
+                <span>{hasWallet ? "更换做市钱包私钥" : "输入做市钱包私钥"}</span>
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  64 位十六进制私钥 (以 0x 开头或不带)
+                </span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showPrivateKey ? "text" : "password"}
+                  placeholder="0x1234567890abcdef..."
+                  className="w-full bg-secondary/60 border border-border/60 rounded-xl px-3.5 py-2.5 text-xs text-foreground font-mono focus:outline-none focus:border-blue-500/80 pr-10"
+                  value={inputPrivateKey}
+                  onChange={(e) => setInputPrivateKey(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowPrivateKey(!showPrivateKey)}
+                >
+                  {showPrivateKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-between pt-2 border-t border-border/60">
+              {hasWallet ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+                  disabled={disconnectWalletMut.isPending}
+                  onClick={() => {
+                    if (confirm("确定要解绑当前做市钱包吗？系统将自动切回模拟模式。")) {
+                      disconnectWalletMut.mutate();
+                      setShowWalletModal(false);
+                      setInputPrivateKey("");
+                    }
+                  }}
+                >
+                  解绑并重置为模拟模式
+                </Button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => {
+                    setShowWalletModal(false);
+                    setInputPrivateKey("");
+                  }}
+                >
+                  取消
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="text-xs bg-blue-600 hover:bg-blue-500 text-white"
+                  disabled={!inputPrivateKey.trim() || importWalletMut.isPending}
+                  onClick={() => {
+                    importWalletMut.mutate(inputPrivateKey);
+                  }}
+                >
+                  {importWalletMut.isPending ? "校验并保存中..." : "测试并保存绑定"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

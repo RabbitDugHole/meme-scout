@@ -373,3 +373,34 @@ describe("V4 Concentrated Liquidity & Dynamic Rebalancing", () => {
   });
 });
 
+describe("LP Wallet Management & Requirements", () => {
+  const lpService = LpService.getInstance();
+  const testPrivateKey = "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d7d21715b23b1d";
+
+  test("importWallet should validate format and update service state", async () => {
+    // Rejects invalid format
+    await assert.rejects(
+      async () => lpService.importWallet("invalid-key"),
+      /私钥格式不正确/,
+    );
+
+    // Accepts valid private key
+    const status = await lpService.importWallet(testPrivateKey);
+    assert.equal(status.hasWallet, true);
+    assert.ok(status.walletAddress?.startsWith("0x"));
+
+    const state = lpService.getState();
+    assert.equal(state.config.hasRhKey, true);
+    assert.equal(state.walletAddress, status.walletAddress);
+    assert.equal(state.walletStatus?.hasWallet, true);
+  });
+
+  test("disconnectWallet should clear keys and reset dryRun safely", async () => {
+    const updatedState = await lpService.disconnectWallet();
+    assert.equal(updatedState.config.hasRhKey, false);
+    assert.equal(updatedState.config.dryRun, true);
+    assert.equal(updatedState.walletAddress, undefined);
+    assert.equal(updatedState.walletStatus?.hasWallet, false);
+  });
+});
+
