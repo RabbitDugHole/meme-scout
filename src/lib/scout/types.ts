@@ -555,6 +555,7 @@ export type LpPosition = {
   category?: LpCategory;
   isRwa?: boolean;
   stockSymbol?: string;
+  dryRun: boolean;
   
   entryTime: string;
   entryPriceUsd: number;
@@ -596,6 +597,17 @@ export type LpPosition = {
   txHistory: LpTxRecord[];
 };
 
+export type LpMetricsSummary = {
+  totalFeeEarnedUsd: number;
+  totalRealizedPnlUsd: number;
+  totalInvestedUsd: number;
+  activeCount: number;
+  closedCount: number;
+  winCount: number;
+  lossCount: number;
+  winRatePct: number;
+};
+
 export type LpState = {
   isRunning: boolean;
   config: LpConfig;
@@ -603,6 +615,8 @@ export type LpState = {
   activePositions: LpPosition[];
   closedPositions: LpPosition[];
   walletStatus?: LpWalletStatus;
+  paperStats: LpMetricsSummary;
+  liveStats: LpMetricsSummary;
   totalFeeEarnedUsd: number;
   totalRealizedPnlUsd: number;
   winCount: number;
