@@ -602,12 +602,23 @@ export type LpState = {
   walletAddress?: string;
   activePositions: LpPosition[];
   closedPositions: LpPosition[];
+  walletStatus?: LpWalletStatus;
   totalFeeEarnedUsd: number;
   totalRealizedPnlUsd: number;
   winCount: number;
   lossCount: number;
   winRatePct: number;
   lastOpportunityScanTime?: string;
+};
+
+export type LpWalletStatus = {
+  hasWallet: boolean;
+  walletAddress?: string;
+  ethBalance?: string;
+  usdgBalance?: string;
+  isReadyForLive: boolean;
+  warning?: string;
+  lastCheckedAt?: string;
 };
 
 // ==========================================
