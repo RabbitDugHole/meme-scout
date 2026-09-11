@@ -319,6 +319,7 @@ export const openManualLp = createServerFn({ method: "POST" })
       stockSymbol?: string;
       activeBandLiquidityUsd?: number;
       customCapitalUsd?: number;
+      dryRun?: boolean;
     }) => input,
   )
   .handler(async ({ data }) => {
@@ -347,12 +348,12 @@ export const closeLpPosition = createServerFn({ method: "POST" })
     );
   });
 
-export const closeAllLpPositions = createServerFn({ method: "POST" }).handler(
-  async () => {
+export const closeAllLpPositions = createServerFn({ method: "POST" })
+  .validator((input: { scope?: "paper" | "live" | "all" } | undefined) => input ?? {})
+  .handler(async ({ data }) => {
     const { lpService } = await import("./lp.server");
-    return lpService.closeAllPositions();
-  },
-);
+    return lpService.closeAllPositions(data?.scope ?? "all");
+  });
 
 export const getV4MarketSummary = createServerFn({ method: "GET" }).handler(
   async () => {

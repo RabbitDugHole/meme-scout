@@ -175,6 +175,7 @@ export function LpPanel({
           stockSymbol: pool.stockSymbol,
           category: pool.category,
           activeBandLiquidityUsd: pool.activeBandLiquidityUsd,
+          dryRun: config?.dryRun ?? true,
         },
       }),
     onSuccess: (pos) => {
@@ -201,10 +202,11 @@ export function LpPanel({
 
   // Close All Mutation
   const closeAllMut = useMutation({
-    mutationFn: () => closeAllLpPositions(),
+    mutationFn: (scope?: "paper" | "live" | "all") =>
+      closeAllLpPositions({ data: { scope: scope || displayMode } }),
     onSuccess: (count) => {
       qc.invalidateQueries({ queryKey: ["lpState"] });
-      toast.success(`已清仓全部 ${count} 个做市池流动性`);
+      toast.success(`已清仓当前所选模式下的 ${count} 个做市池流动性`);
     },
     onError: (err: any) => {
       toast.error(`全部撤池失败: ${err?.message || err}`);
@@ -252,8 +254,67 @@ export function LpPanel({
     },
   });
 
-  const activePositions = lpData?.activePositions || [];
-  const closedPositions = lpData?.closedPositions || [];
+  // Data Isolation: displayMode ("paper" | "live" | "all")
+  const [displayMode, setDisplayMode] = useState<"paper" | "live" | "all">(
+    config?.dryRun === false ? "live" : "paper",
+  );
+
+  const paperStats = lpData?.paperStats || {
+    totalFeeEarnedUsd: 0,
+    totalRealizedPnlUsd: 0,
+    totalInvestedUsd: 0,
+    activeCount: 0,
+    closedCount: 0,
+    winCount: 0,
+    lossCount: 0,
+    winRatePct: 0,
+  };
+
+  const liveStats = lpData?.liveStats || {
+    totalFeeEarnedUsd: 0,
+    totalRealizedPnlUsd: 0,
+    totalInvestedUsd: 0,
+    activeCount: 0,
+    closedCount: 0,
+    winCount: 0,
+    lossCount: 0,
+    winRatePct: 0,
+  };
+
+  const currentStats =
+    displayMode === "live"
+      ? liveStats
+      : displayMode === "paper"
+        ? paperStats
+        : {
+            totalFeeEarnedUsd: paperStats.totalFeeEarnedUsd + liveStats.totalFeeEarnedUsd,
+            totalRealizedPnlUsd: paperStats.totalRealizedPnlUsd + liveStats.totalRealizedPnlUsd,
+            totalInvestedUsd: paperStats.totalInvestedUsd + liveStats.totalInvestedUsd,
+            activeCount: paperStats.activeCount + liveStats.activeCount,
+            closedCount: paperStats.closedCount + liveStats.closedCount,
+            winCount: paperStats.winCount + liveStats.winCount,
+            lossCount: paperStats.lossCount + liveStats.lossCount,
+            winRatePct:
+              paperStats.closedCount + liveStats.closedCount > 0
+                ? ((paperStats.winCount + liveStats.winCount) /
+                    (paperStats.closedCount + liveStats.closedCount)) *
+                  100
+                : 0,
+          };
+
+  const allActivePositions = lpData?.activePositions || [];
+  const activePositions = allActivePositions.filter((pos) => {
+    if (displayMode === "live") return !pos.dryRun;
+    if (displayMode === "paper") return pos.dryRun;
+    return true;
+  });
+
+  const allClosedPositions = lpData?.closedPositions || [];
+  const closedPositions = allClosedPositions.filter((pos) => {
+    if (displayMode === "live") return !pos.dryRun;
+    if (displayMode === "paper") return pos.dryRun;
+    return true;
+  });
 
   const walletStatus = lpData?.walletStatus;
   const hasWallet = Boolean(lpData?.walletAddress || walletStatus?.hasWallet);
@@ -441,6 +502,80 @@ export function LpPanel({
         </div>
       </div>
 
+      {/* Scope / Mode Isolation Selector */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-secondary/30 p-2.5 rounded-xl border border-border/60">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setDisplayMode("paper")}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5",
+              displayMode === "paper"
+                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/60",
+            )}
+          >
+            <span>🛡️ 模拟做市数据</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">
+              {paperStats.activeCount} 活跃 / {paperStats.closedCount} 结项
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDisplayMode("live")}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5",
+              displayMode === "live"
+                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/60",
+            )}
+          >
+            <span>🚀 真实链上实盘</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">
+              {liveStats.activeCount} 活跃 / {liveStats.closedCount} 结项
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setDisplayMode("all")}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5",
+              displayMode === "all"
+                ? "bg-blue-500/20 text-blue-300 border border-blue-500/40 shadow-sm"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary/60",
+            )}
+          >
+            <span>🌐 全部汇总数据</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 font-mono">
+              {paperStats.activeCount + liveStats.activeCount} 活跃
+            </span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
+          <span>当前统计口径:</span>
+          <Badge
+            variant="outline"
+            className={cn(
+              "text-[11px]",
+              displayMode === "live"
+                ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
+                : displayMode === "paper"
+                  ? "text-amber-400 border-amber-500/30 bg-amber-500/10"
+                  : "text-blue-400 border-blue-500/30 bg-blue-500/10",
+            )}
+          >
+            {displayMode === "live"
+              ? "🚀 真实链上实盘 (已隔离)"
+              : displayMode === "paper"
+                ? "🛡️ 模拟沙盒 (已隔离)"
+                : "🌐 模拟 + 实盘 汇总"}
+          </Badge>
+        </div>
+      </div>
+
       {/* Top Banner & KPI Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {/* Card 1: Engine Status */}
@@ -495,11 +630,13 @@ export function LpPanel({
         {/* Card 2: Fee Accrued */}
         <div className="rounded-xl border border-border/60 bg-card p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground font-medium">累计手续费收入</span>
+            <span className="text-xs text-muted-foreground font-medium">
+              累计手续费收入 ({displayMode === "live" ? "实盘" : displayMode === "paper" ? "模拟" : "汇总"})
+            </span>
             <DollarSign className="size-4 text-emerald-400" />
           </div>
           <div className="mt-2 text-2xl font-bold text-emerald-400">
-            +${(lpData?.totalFeeEarnedUsd ?? 0).toFixed(2)}
+            +${(currentStats.totalFeeEarnedUsd ?? 0).toFixed(2)}
             <span className="text-xs font-normal text-muted-foreground ml-1">USDG</span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">
@@ -510,28 +647,32 @@ export function LpPanel({
         {/* Card 3: Net Realized PnL */}
         <div className="rounded-xl border border-border/60 bg-card p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground font-medium">累计净盈亏 (扣除无常损失)</span>
+            <span className="text-xs text-muted-foreground font-medium">
+              累计净盈亏 ({displayMode === "live" ? "实盘" : displayMode === "paper" ? "模拟" : "汇总"})
+            </span>
             <TrendingUp className="size-4 text-cyan-400" />
           </div>
           <div
             className={cn(
               "mt-2 text-2xl font-bold",
-              (lpData?.totalRealizedPnlUsd ?? 0) >= 0 ? "text-cyan-400" : "text-rose-400",
+              (currentStats.totalRealizedPnlUsd ?? 0) >= 0 ? "text-cyan-400" : "text-rose-400",
             )}
           >
-            {(lpData?.totalRealizedPnlUsd ?? 0) >= 0 ? "+" : ""}
-            ${(lpData?.totalRealizedPnlUsd ?? 0).toFixed(2)}
+            {(currentStats.totalRealizedPnlUsd ?? 0) >= 0 ? "+" : ""}
+            ${(currentStats.totalRealizedPnlUsd ?? 0).toFixed(2)}
             <span className="text-xs font-normal text-muted-foreground ml-1">USDG</span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">
-            综合胜率: {(lpData?.winRatePct ?? 0).toFixed(1)}% ({lpData?.winCount ?? 0} 胜 / {lpData?.lossCount ?? 0} 负)
+            综合胜率: {(currentStats.winRatePct ?? 0).toFixed(1)}% ({currentStats.winCount ?? 0} 胜 / {currentStats.lossCount ?? 0} 负)
           </div>
         </div>
 
         {/* Card 4: Active Pools */}
         <div className="rounded-xl border border-border/60 bg-card p-4 flex flex-col justify-between">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground font-medium">当前做市状态</span>
+            <span className="text-xs text-muted-foreground font-medium">
+              当前做市池 ({displayMode === "live" ? "实盘" : displayMode === "paper" ? "模拟" : "汇总"})
+            </span>
             <Layers className="size-4 text-blue-400" />
           </div>
           <div className="mt-2 text-2xl font-bold">
@@ -1014,13 +1155,24 @@ export function LpPanel({
                 size="sm"
                 className="h-8 text-xs"
                 onClick={() => {
-                  if (confirm("确定要对所有在持做市头寸执行紧急一键撤池并兑回 USDG 吗？")) {
-                    closeAllMut.mutate();
+                  const scopeDesc =
+                    displayMode === "live"
+                      ? "真实链上实盘"
+                      : displayMode === "paper"
+                        ? "模拟沙盒"
+                        : "全量（含实盘与模拟）";
+                  if (
+                    confirm(
+                      `确定要对当前范围 [${scopeDesc}] 下的所有 ${activePositions.length} 个在持做市头寸执行紧急一键撤池并兑回 USDG 吗？`,
+                    )
+                  ) {
+                    closeAllMut.mutate(displayMode);
                   }
                 }}
                 disabled={closeAllMut.isPending}
               >
-                <Trash2 className="size-3 mr-1" /> 紧急全量撤池
+                <Trash2 className="size-3 mr-1" /> 一键撤池 (
+                {displayMode === "live" ? "实盘" : displayMode === "paper" ? "模拟" : "全部"})
               </Button>
             )}
           </div>
@@ -1056,6 +1208,21 @@ export function LpPanel({
                         <span className="text-xs text-muted-foreground max-w-[140px] truncate">
                           ({pos.name})
                         </span>
+                      )}
+                      {pos.dryRun ? (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] border-amber-500/40 text-amber-300 bg-amber-500/10"
+                        >
+                          🛡️ 模拟
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] border-emerald-500/40 text-emerald-300 bg-emerald-500/10 font-semibold"
+                        >
+                          🚀 实盘
+                        </Badge>
                       )}
                       <Badge
                         variant="outline"
@@ -1226,6 +1393,7 @@ export function LpPanel({
             <table className="w-full text-left text-xs">
               <thead className="bg-secondary/40 text-muted-foreground border-b border-border/60">
                 <tr>
+                  <th className="py-2.5 px-3">模式</th>
                   <th className="py-2.5 px-3">代币标的</th>
                   <th className="py-2.5 px-3">做市周期</th>
                   <th className="py-2.5 px-3">初始本金</th>
@@ -1243,6 +1411,23 @@ export function LpPanel({
 
                   return (
                     <tr key={pos.id} className="hover:bg-secondary/20 transition-colors">
+                      <td className="py-2.5 px-3">
+                        {pos.dryRun ? (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] border-amber-500/40 text-amber-300 bg-amber-500/10"
+                          >
+                            🛡️ 模拟
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] border-emerald-500/40 text-emerald-300 bg-emerald-500/10 font-semibold"
+                          >
+                            🚀 实盘
+                          </Badge>
+                        )}
+                      </td>
                       <td className="py-2.5 px-3 font-semibold text-foreground">
                         ${pos.symbol}
                       </td>

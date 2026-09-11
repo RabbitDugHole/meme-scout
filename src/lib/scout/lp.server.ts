@@ -336,11 +336,17 @@ export class LpService {
         const data = JSON.parse(raw);
         if (Array.isArray(data.active)) {
           for (const pos of data.active) {
+            if (pos.dryRun === undefined) {
+              pos.dryRun = true;
+            }
             this.activePositions.set(pos.id, pos);
           }
         }
         if (Array.isArray(data.closed)) {
-          this.closedPositions = data.closed.slice(0, 100);
+          this.closedPositions = data.closed.map((pos: LpPosition) => ({
+            ...pos,
+            dryRun: pos.dryRun === undefined ? true : pos.dryRun,
+          })).slice(0, 100);
         }
         console.log(
           `[LpService] 📂 已载入 ${this.activePositions.size} 个活跃做市池，${this.closedPositions.length} 条已结项记录`,
@@ -369,19 +375,20 @@ export class LpService {
     }
   }
 
-  public getState(): LpState {
-    const active = Array.from(this.activePositions.values()).sort(
-      (a, b) => new Date(b.entryTime).getTime() - new Date(a.entryTime).getTime(),
-    );
-
+  private computeMetrics(
+    activeSubset: LpPosition[],
+    closedSubset: LpPosition[],
+  ): import("./types").LpMetricsSummary {
     let totalFeeEarnedUsd = 0;
     let totalRealizedPnlUsd = 0;
+    let totalInvestedUsd = 0;
     let winCount = 0;
     let lossCount = 0;
 
-    for (const pos of this.closedPositions) {
+    for (const pos of closedSubset) {
       totalFeeEarnedUsd += pos.feeEarnedUsd || 0;
       totalRealizedPnlUsd += pos.netPnlUsd || 0;
+      totalInvestedUsd += pos.initialUsdInvested || 0;
       if ((pos.netPnlUsd || 0) >= 0) {
         winCount++;
       } else {
@@ -389,13 +396,39 @@ export class LpService {
       }
     }
 
-    // Add unharvested fee from active positions
-    for (const pos of active) {
+    for (const pos of activeSubset) {
       totalFeeEarnedUsd += pos.feeEarnedUsd || 0;
+      totalInvestedUsd += pos.initialUsdInvested || 0;
     }
 
     const totalClosed = winCount + lossCount;
     const winRatePct = totalClosed > 0 ? (winCount / totalClosed) * 100 : 0;
+
+    return {
+      totalFeeEarnedUsd,
+      totalRealizedPnlUsd,
+      totalInvestedUsd,
+      activeCount: activeSubset.length,
+      closedCount: closedSubset.length,
+      winCount,
+      lossCount,
+      winRatePct,
+    };
+  }
+
+  public getState(): LpState {
+    const active = Array.from(this.activePositions.values()).sort(
+      (a, b) => new Date(b.entryTime).getTime() - new Date(a.entryTime).getTime(),
+    );
+
+    const paperActive = active.filter((p) => p.dryRun);
+    const paperClosed = this.closedPositions.filter((p) => p.dryRun);
+    const liveActive = active.filter((p) => !p.dryRun);
+    const liveClosed = this.closedPositions.filter((p) => !p.dryRun);
+
+    const paperStats = this.computeMetrics(paperActive, paperClosed);
+    const liveStats = this.computeMetrics(liveActive, liveClosed);
+    const currentModeStats = this.config.dryRun ? paperStats : liveStats;
 
     return {
       isRunning: this.isRunning,
@@ -404,11 +437,13 @@ export class LpService {
       walletStatus: this.cachedWalletStatus,
       activePositions: active,
       closedPositions: this.closedPositions,
-      totalFeeEarnedUsd,
-      totalRealizedPnlUsd,
-      winCount,
-      lossCount,
-      winRatePct,
+      paperStats,
+      liveStats,
+      totalFeeEarnedUsd: currentModeStats.totalFeeEarnedUsd,
+      totalRealizedPnlUsd: currentModeStats.totalRealizedPnlUsd,
+      winCount: currentModeStats.winCount,
+      lossCount: currentModeStats.lossCount,
+      winRatePct: currentModeStats.winRatePct,
     };
   }
 
@@ -727,12 +762,14 @@ export class LpService {
     stockSymbol?: string;
     activeBandLiquidityUsd?: number;
     customCapitalUsd?: number;
+    dryRun?: boolean;
   }): Promise<LpPosition> {
     const rwaMatch = extractRwaStock(params.symbol);
     const isRwa = params.isRwa ?? rwaMatch.isRwa;
     const stockSymbol = params.stockSymbol || rwaMatch.stockSymbol;
     const category = params.category || (isRwa ? "RWA" : "MEME");
     const stage = params.stage || (isRwa ? "RWA_STABLE" : "SIDEWAYS");
+    const isDryRun = params.dryRun !== undefined ? params.dryRun : this.config.dryRun;
 
     const capitalInvested =
       params.customCapitalUsd ||
@@ -765,7 +802,7 @@ export class LpService {
       timestamp: new Date().toISOString(),
       details: `创建 V4 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, 乘数: ${capitalEfficiency.toFixed(1)}x`,
       amountUsd: capitalInvested,
-      dryRun: this.config.dryRun,
+      dryRun: isDryRun,
       status: "CONFIRMED",
     };
 
@@ -781,6 +818,7 @@ export class LpService {
       category,
       isRwa,
       stockSymbol,
+      dryRun: isDryRun,
       entryTime: new Date().toISOString(),
       entryPriceUsd: params.priceUsd,
       initialUsdInvested: capitalInvested,
@@ -808,13 +846,13 @@ export class LpService {
     this.saveToStorage();
 
     console.log(
-      `🌊 [LpService] 建立集中做市头寸: $${params.symbol} (${stage}, 属性: ${category}), 资金: $${capitalInvested.toFixed(2)} USDG, 日费率预估: ${dailyFeeRatePct.toFixed(1)}%/天`,
+      `🌊 [LpService] 建立集中做市头寸: $${params.symbol} (${stage}, 属性: ${category}, 模式: ${isDryRun ? "模拟" : "实盘"}), 资金: $${capitalInvested.toFixed(2)} USDG, 日费率预估: ${dailyFeeRatePct.toFixed(1)}%/天`,
     );
 
     if (this.config.larkNotification) {
       sendLarkLpOpenAlert({
         position,
-        dryRun: this.config.dryRun,
+        dryRun: isDryRun,
         webhookUrl: this.config.webhookUrl,
       }).catch((err) => console.warn("[LpService] Lark 建仓告警失败:", err));
     }
@@ -913,7 +951,7 @@ export class LpService {
             timestamp: new Date().toISOString(),
             details: `手续费已达 $${pos.feeEarnedUsd.toFixed(2)}，成功提回本金 $${withdrawAmount.toFixed(2)} USDG，头寸进入零风险收租状态`,
             amountUsd: withdrawAmount,
-            dryRun: this.config.dryRun,
+            dryRun: pos.dryRun,
             status: "CONFIRMED",
           });
 
@@ -923,7 +961,7 @@ export class LpService {
             sendLarkLpCollectAlert({
               position: pos,
               harvestedFeeUsd: withdrawAmount,
-              dryRun: this.config.dryRun,
+              dryRun: pos.dryRun,
               webhookUrl: this.config.webhookUrl,
             }).catch((err) => console.warn("[LpService] Lark 提润告警失败:", err));
           }
@@ -1018,14 +1056,14 @@ export class LpService {
       details: `${reason}: 基准价从 $${oldPrice.toFixed(4)} 移至 $${newPrice.toFixed(4)}，已锁定手续费收益 $${pos.feeEarnedUsd.toFixed(2)}`,
       amountUsd: pos.initialUsdInvested,
       feeHarvestedUsd: pos.feeEarnedUsd,
-      dryRun: this.config.dryRun,
+      dryRun: pos.dryRun,
       status: "CONFIRMED",
     };
     pos.txHistory.push(txRecord);
     this.saveToStorage();
 
     console.log(
-      `🔄 [LpService] $${pos.symbol} 智能移仓完成 (第 ${pos.rebalanceCount} 次): 新中枢价 $${newPrice.toFixed(4)}`,
+      `🔄 [LpService] $${pos.symbol} 智能移仓完成 (第 ${pos.rebalanceCount} 次, 模式: ${pos.dryRun ? "模拟" : "实盘"}): 新中枢价 $${newPrice.toFixed(4)}`,
     );
 
     if (this.config.larkNotification) {
@@ -1035,7 +1073,7 @@ export class LpService {
         oldPriceUsd: oldPrice,
         newPriceUsd: newPrice,
         driftPct,
-        dryRun: this.config.dryRun,
+        dryRun: pos.dryRun,
         webhookUrl: this.config.webhookUrl,
       }).catch((err) => console.warn("[LpService] Lark 移仓告警失败:", err));
     }
@@ -1071,7 +1109,7 @@ export class LpService {
       details: `撤回流动性并一键兑回 USDG: ${reason} (最终实现手续费: $${pos.feeEarnedUsd.toFixed(2)}, IL: -$${pos.impermanentLossUsd.toFixed(2)})`,
       amountUsd: pos.initialUsdInvested + pos.netPnlUsd,
       feeHarvestedUsd: pos.feeEarnedUsd,
-      dryRun: this.config.dryRun,
+      dryRun: pos.dryRun,
       status: "CONFIRMED",
     };
     pos.txHistory.push(exitTx);
@@ -1082,21 +1120,24 @@ export class LpService {
     this.saveToStorage();
 
     console.log(
-      `🏁 [LpService] 结项归档: $${pos.symbol}, 净盈亏: $${pos.netPnlUsd.toFixed(2)} (${pos.netPnlPct.toFixed(1)}%), 原因: ${reason}`,
+      `🏁 [LpService] 结项归档: $${pos.symbol} (模式: ${pos.dryRun ? "模拟" : "实盘"}), 净盈亏: $${pos.netPnlUsd.toFixed(2)} (${pos.netPnlPct.toFixed(1)}%), 原因: ${reason}`,
     );
 
     if (this.config.larkNotification) {
       const state = this.getState();
+      const stats = pos.dryRun ? state.paperStats : state.liveStats;
+      const filteredClosed = this.closedPositions.filter((p) => p.dryRun === pos.dryRun);
+
       sendLarkComprehensiveLpReport({
         closedPosition: pos,
-        allClosedPositions: this.closedPositions,
-        activeCount: this.activePositions.size,
-        totalRealizedPnlUsd: state.totalRealizedPnlUsd,
-        totalFeeEarnedUsd: state.totalFeeEarnedUsd,
-        winCount: state.winCount,
-        lossCount: state.lossCount,
-        winRatePct: state.winRatePct,
-        dryRun: this.config.dryRun,
+        allClosedPositions: filteredClosed,
+        activeCount: stats.activeCount,
+        totalRealizedPnlUsd: stats.totalRealizedPnlUsd,
+        totalFeeEarnedUsd: stats.totalFeeEarnedUsd,
+        winCount: stats.winCount,
+        lossCount: stats.lossCount,
+        winRatePct: stats.winRatePct,
+        dryRun: pos.dryRun,
         webhookUrl: this.config.webhookUrl,
       }).catch((err) => console.warn("[LpService] 发送全量结项战报失败:", err));
     }
@@ -1104,12 +1145,21 @@ export class LpService {
     return pos;
   }
 
-  public async closeAllPositions(): Promise<number> {
-    const ids = Array.from(this.activePositions.keys());
-    for (const id of ids) {
-      await this.closePosition(id, "CLOSED_MANUAL", "管理员一键撤池清仓");
+  public async closeAllPositions(scope: "paper" | "live" | "all" = "all"): Promise<number> {
+    const targets = Array.from(this.activePositions.values()).filter((pos) => {
+      if (scope === "paper") return pos.dryRun;
+      if (scope === "live") return !pos.dryRun;
+      return true;
+    });
+
+    for (const pos of targets) {
+      await this.closePosition(
+        pos.id,
+        "CLOSED_MANUAL",
+        `管理员一键撤池清仓 (${pos.dryRun ? "模拟盘" : "实盘"})`,
+      );
     }
-    return ids.length;
+    return targets.length;
   }
 
   public async fetchPoolDexData(tokenAddress: string): Promise<{

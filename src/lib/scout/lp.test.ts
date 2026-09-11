@@ -118,6 +118,7 @@ describe("LpService Position Lifecycle & Execution", () => {
       chain: "robinhood",
       feeTier: 10000,
       stage: "PUMP",
+      dryRun: true,
       entryTime: new Date().toISOString(),
       entryPriceUsd: 0.01,
       initialUsdInvested: 100,
@@ -164,6 +165,7 @@ describe("Lark LP Alerts Formatting Rules", () => {
     chain: "robinhood",
     feeTier: 10000,
     stage: "PUMP",
+    dryRun: true,
     entryTime: "2026-09-10T02:00:00.000Z",
     entryPriceUsd: 0.005,
     initialUsdInvested: 50,
@@ -403,4 +405,74 @@ describe("LP Wallet Management & Requirements", () => {
     assert.equal(updatedState.walletStatus?.hasWallet, false);
   });
 });
+
+describe("Paper vs Live LP Data Isolation & Scoped Operations", () => {
+  const lpService = LpService.getInstance();
+
+  test("should isolate paper and live statistics and respect closeAll scope", async () => {
+    // Record baseline
+    const baseState = lpService.getState();
+    const basePaperClosed = baseState.paperStats.closedCount;
+    const baseLiveClosed = baseState.liveStats.closedCount;
+    const baseLiveInvested = baseState.liveStats.totalInvestedUsd;
+
+    // Open a Paper LP position
+    const paperPos = await lpService.openLpPosition({
+      tokenAddress: "0x1111111111111111111111111111111111111111",
+      symbol: "PAPER_TOKEN",
+      chain: "robinhood",
+      priceUsd: 1.0,
+      liquidityUsd: 50000,
+      volume5m: 10000,
+      stage: "SIDEWAYS",
+      customCapitalUsd: 50,
+      dryRun: true,
+    });
+    assert.equal(paperPos.dryRun, true);
+
+    // Open a Live LP position
+    const livePos = await lpService.openLpPosition({
+      tokenAddress: "0x2222222222222222222222222222222222222222",
+      symbol: "LIVE_TOKEN",
+      chain: "robinhood",
+      priceUsd: 2.0,
+      liquidityUsd: 80000,
+      volume5m: 20000,
+      stage: "SIDEWAYS",
+      customCapitalUsd: 100,
+      dryRun: false,
+    });
+    assert.equal(livePos.dryRun, false);
+
+    // Check state isolation
+    const stateBeforeClose = lpService.getState();
+    assert.ok(stateBeforeClose.paperStats.activeCount >= 1);
+    assert.ok(stateBeforeClose.paperStats.totalInvestedUsd >= 50);
+
+    assert.ok(stateBeforeClose.liveStats.activeCount >= 1);
+    assert.equal(stateBeforeClose.liveStats.totalInvestedUsd, baseLiveInvested + 100);
+    assert.equal(stateBeforeClose.liveStats.closedCount, baseLiveClosed);
+
+    // Close only paper positions
+    const closedPaperCount = await lpService.closeAllPositions("paper");
+    assert.ok(closedPaperCount >= 1);
+
+    // Verify live position is still active and untouched
+    const stateAfterPaperClose = lpService.getState();
+    assert.equal(stateAfterPaperClose.paperStats.activeCount, 0);
+
+    assert.ok(stateAfterPaperClose.liveStats.activeCount >= 1);
+    assert.equal(stateAfterPaperClose.liveStats.closedCount, baseLiveClosed);
+    assert.ok(stateAfterPaperClose.activePositions.some((p) => p.id === livePos.id));
+
+    // Close remaining live positions
+    const closedLiveCount = await lpService.closeAllPositions("live");
+    assert.ok(closedLiveCount >= 1);
+
+    const stateFinal = lpService.getState();
+    assert.equal(stateFinal.liveStats.activeCount, 0);
+    assert.equal(stateFinal.liveStats.closedCount, baseLiveClosed + closedLiveCount);
+  });
+});
+
 
