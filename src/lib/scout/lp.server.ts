@@ -6,6 +6,7 @@ import {
   http,
   parseUnits,
   formatUnits,
+  formatEther,
   defineChain,
   parseAbi,
   type Hash,
@@ -18,6 +19,7 @@ import type {
   LpStage,
   LpState,
   LpTxRecord,
+  LpWalletStatus,
   V4PoolItem,
 } from "./types";
 import {
@@ -29,6 +31,7 @@ import {
   DEFAULT_LARK_WEBHOOK_URL,
 } from "./lark";
 import { extractRwaStock } from "./stocks";
+import { USDG } from "./constants";
 
 // Robinhood Chain definition
 const robinhoodChain = defineChain({
@@ -49,6 +52,7 @@ const robinhoodChain = defineChain({
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const LP_CONFIG_FILE = path.resolve(DATA_DIR, "lp-config.json");
 const LP_POSITIONS_FILE = path.resolve(DATA_DIR, "lp-positions.json");
+const LP_WALLET_FILE = path.resolve(DATA_DIR, "lp-wallet.json");
 
 // Uniswap V3 / Pons NonfungiblePositionManager ABI interface snippet
 const POSITION_MANAGER_ABI = parseAbi([
@@ -120,6 +124,11 @@ export class LpService {
     hasRhKey: false,
   };
 
+  private cachedWalletStatus: LpWalletStatus = {
+    hasWallet: false,
+    isReadyForLive: false,
+  };
+
   private activePositions: Map<string, LpPosition> = new Map();
   private closedPositions: LpPosition[] = [];
 
@@ -142,18 +151,176 @@ export class LpService {
   }
 
   private initWalletConfig(): void {
-    const pk = process.env.RH_PRIVATE_KEY || process.env.EVM_PRIVATE_KEY;
+    let pk = "";
+    if (fs.existsSync(LP_WALLET_FILE)) {
+      try {
+        const raw = fs.readFileSync(LP_WALLET_FILE, "utf8");
+        const parsed = JSON.parse(raw);
+        if (parsed.privateKey) {
+          pk = parsed.privateKey;
+        }
+      } catch (err) {
+        console.warn("[LpService] 读取钱包文件失败:", err);
+      }
+    }
+
+    if (!pk) {
+      pk = process.env.RH_PRIVATE_KEY || process.env.EVM_PRIVATE_KEY || "";
+    }
+
     if (pk) {
       try {
         const formattedKey = pk.startsWith("0x") ? (pk as `0x${string}`) : (`0x${pk}` as `0x${string}`);
         const account = privateKeyToAccount(formattedKey);
         this.config.walletAddress = account.address;
         this.config.hasRhKey = true;
+        this.cachedWalletStatus = {
+          hasWallet: true,
+          walletAddress: account.address,
+          ethBalance: "0.0000",
+          usdgBalance: "0.00",
+          isReadyForLive: false,
+          lastCheckedAt: new Date().toISOString(),
+        };
         console.log(`[LpService] 🔑 做市钱包初始化成功: ${account.address}`);
+        // Fetch balances asynchronously
+        this.refreshWalletBalances().catch(() => {});
       } catch (err) {
         console.warn("[LpService] 钱包私钥解析失败:", err);
       }
+    } else {
+      this.cachedWalletStatus = {
+        hasWallet: false,
+        isReadyForLive: false,
+      };
     }
+  }
+
+  public async refreshWalletBalances(): Promise<LpWalletStatus> {
+    if (!this.config.walletAddress || !this.config.hasRhKey) {
+      this.cachedWalletStatus = {
+        hasWallet: false,
+        isReadyForLive: false,
+        lastCheckedAt: new Date().toISOString(),
+      };
+      return this.cachedWalletStatus;
+    }
+
+    const addr = this.config.walletAddress as `0x${string}`;
+    try {
+      const ethBalRaw = await this.rhClient.getBalance({ address: addr });
+      const ethFormatted = Number(formatEther(ethBalRaw)).toFixed(4);
+
+      let usdgFormatted = "0.00";
+      try {
+        const usdgBalRaw = await this.rhClient.readContract({
+          address: USDG as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [addr],
+        });
+        // USDG has 6 decimals on Robinhood Chain
+        usdgFormatted = (Number(usdgBalRaw) / 1e6).toFixed(2);
+      } catch (err) {
+        console.warn("[LpService] 查询 USDG 余额失败:", err);
+      }
+
+      const ethNum = Number(ethFormatted);
+      const usdgNum = Number(usdgFormatted);
+      const isReady = ethNum >= 0.001 && usdgNum >= 10;
+      let warning: string | undefined = undefined;
+
+      if (ethNum < 0.001) {
+        warning = "ETH (Gas) 余额偏低 (< 0.001 ETH)，建议充值至少 0.002 ETH 避免上链交易失败";
+      } else if (usdgNum < 10) {
+        warning = "USDG (本金) 余额偏低 (< 10 USDG)，建议充值至少 50 USDG 以满足单池做市要求";
+      }
+
+      this.cachedWalletStatus = {
+        hasWallet: true,
+        walletAddress: addr,
+        ethBalance: ethFormatted,
+        usdgBalance: usdgFormatted,
+        isReadyForLive: isReady,
+        warning,
+        lastCheckedAt: new Date().toISOString(),
+      };
+    } catch (err: any) {
+      console.warn("[LpService] 刷新钱包余额网络错误:", err?.message || err);
+      if (this.cachedWalletStatus) {
+        this.cachedWalletStatus.warning = "RPC 查询余额超时，请稍后重试";
+      }
+    }
+
+    return this.cachedWalletStatus;
+  }
+
+  public async importWallet(rawPrivateKey: string): Promise<LpWalletStatus> {
+    const cleaned = rawPrivateKey.trim();
+    const formattedKey = cleaned.startsWith("0x") ? (cleaned as `0x${string}`) : (`0x${cleaned}` as `0x${string}`);
+
+    if (formattedKey.length !== 66) {
+      throw new Error("私钥格式不正确，应为 64 位十六进制字符 (可带或不带 0x 前缀)");
+    }
+
+    let account;
+    try {
+      account = privateKeyToAccount(formattedKey);
+    } catch (err: any) {
+      throw new Error(`私钥解析失败: ${err?.message || err}`);
+    }
+
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+
+    const walletRecord = {
+      address: account.address,
+      privateKey: formattedKey,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(LP_WALLET_FILE, JSON.stringify(walletRecord, null, 2), {
+      mode: 0o600,
+    });
+
+    this.config.walletAddress = account.address;
+    this.config.hasRhKey = true;
+    this.saveToStorage();
+
+    console.log(`[LpService] 🔑 用户已成功导入 LP 做市钱包: ${account.address}`);
+    return this.refreshWalletBalances();
+  }
+
+  public async disconnectWallet(): Promise<LpState> {
+    try {
+      if (fs.existsSync(LP_WALLET_FILE)) {
+        fs.unlinkSync(LP_WALLET_FILE);
+      }
+    } catch (err) {
+      console.warn("[LpService] 删除钱包文件失败:", err);
+    }
+
+    this.config.walletAddress = undefined;
+    this.config.hasRhKey = false;
+    // For safety, force dryRun to true when wallet is unbound
+    this.config.dryRun = true;
+    this.saveToStorage();
+
+    this.cachedWalletStatus = {
+      hasWallet: false,
+      isReadyForLive: false,
+      lastCheckedAt: new Date().toISOString(),
+    };
+
+    console.log("[LpService] 🔒 做市钱包已解绑并安全重置为模拟模式");
+    return this.getState();
+  }
+
+  public async getWalletStatus(forceRefresh: boolean = false): Promise<LpWalletStatus> {
+    if (forceRefresh || !this.cachedWalletStatus.lastCheckedAt) {
+      return this.refreshWalletBalances();
+    }
+    return this.cachedWalletStatus;
   }
 
   private loadFromStorage(): void {
@@ -234,6 +401,7 @@ export class LpService {
       isRunning: this.isRunning,
       config: { ...this.config },
       walletAddress: this.config.walletAddress,
+      walletStatus: this.cachedWalletStatus,
       activePositions: active,
       closedPositions: this.closedPositions,
       totalFeeEarnedUsd,

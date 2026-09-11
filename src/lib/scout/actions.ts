@@ -368,6 +368,30 @@ export const triggerV4RadarScan = createServerFn({ method: "POST" }).handler(
   },
 );
 
+export const importLpWalletAction = createServerFn({ method: "POST" })
+  .validator((input: { privateKey: string }) => {
+    const key = input.privateKey.trim();
+    if (!key) throw new Error("请输入 64 位十六进制做市钱包私钥");
+    return { privateKey: key };
+  })
+  .handler(async ({ data }) => {
+    const { lpService } = await import("./lp.server");
+    return lpService.importWallet(data.privateKey);
+  });
+
+export const disconnectLpWalletAction = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const { lpService } = await import("./lp.server");
+    return lpService.disconnectWallet();
+  },
+);
+
+export const getLpWalletStatusAction = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { lpService } = await import("./lp.server");
+    return lpService.getWalletStatus(true);
+  },
+);
 
 // ==========================================
 // Google 2FA Authentication Server Actions
