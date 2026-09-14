@@ -292,6 +292,11 @@ export const updateLpConfig = createServerFn({ method: "POST" })
       volumeDropExitThresholdPct?: number;
       stopLossPriceDropPct?: number;
       maxHoldMinutes?: number;
+      enableUpperPiercedExit?: boolean;
+      pumpMode?: "SINGLE_SIDED_RANGE_ORDER" | "ASYMMETRIC_UPPER";
+      singleSidedUpperCorePct?: number;
+      singleSidedUpperMaxPct?: number;
+      fastStopLossPct?: number;
       larkNotification?: boolean;
       webhookUrl?: string;
     }) => input,

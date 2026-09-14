@@ -117,6 +117,12 @@ export class LpService {
     minOpportunityVolume2hUsd: 10000,
     maxOpportunityActiveLiqUsd: 80000,
     opportunityAlertCooldownMin: 60,
+    // Single-Sided Upper Range Order (单边上方限价卖出收租) Settings
+    enableUpperPiercedExit: true,
+    pumpMode: "SINGLE_SIDED_RANGE_ORDER",
+    singleSidedUpperCorePct: 20,
+    singleSidedUpperMaxPct: 45,
+    fastStopLossPct: -8,
 
     larkNotification: true,
     webhookUrl: DEFAULT_LARK_WEBHOOK_URL,
@@ -338,6 +344,12 @@ export class LpService {
           for (const pos of data.active) {
             if (pos.dryRun === undefined) {
               pos.dryRun = true;
+            }
+            if (!pos.upperPiercedTargetPriceUsd && pos.ranges?.length > 0) {
+              pos.upperPiercedTargetPriceUsd = pos.ranges.reduce(
+                (max: number, r: any) => Math.max(max, r.maxPriceUsd),
+                pos.entryPriceUsd,
+              );
             }
             this.activePositions.set(pos.id, pos);
           }
@@ -570,6 +582,47 @@ export class LpService {
     }
 
     if (stage === "PUMP") {
+      const mode = this.config.pumpMode || "SINGLE_SIDED_RANGE_ORDER";
+
+      if (mode === "SINGLE_SIDED_RANGE_ORDER") {
+        // 单边上方集中流动性 Range Order: 资金完全部署于现价上方，价格上冲时以高倍率吃满手续费，穿上沿后100%兑换为USDG并撤出
+        const coreUpPct = (this.config.singleSidedUpperCorePct || 20) / 100;
+        const maxUpPct = (this.config.singleSidedUpperMaxPct || 45) / 100;
+
+        // 1. 单边核心收租带 (60%) [现价 -> +20%]
+        const coreUpPrice = entryPrice * (1 + coreUpPct);
+        const coreLowerTick = LpService.alignTick(LpService.priceToTick(entryPrice), tickSpacing);
+        const coreUpperTick = LpService.alignTick(LpService.priceToTick(coreUpPrice), tickSpacing);
+        segments.push({
+          segmentName: `单边上方核心收租带 (60%) [+0%~+${this.config.singleSidedUpperCorePct || 20}%]`,
+          minPriceUsd: LpService.tickToPrice(coreLowerTick),
+          maxPriceUsd: LpService.tickToPrice(coreUpperTick),
+          lowerTick: coreLowerTick,
+          upperTick: coreUpperTick,
+          capitalSharePct: 60,
+          capitalAllocatedUsd: capitalTotal * 0.6,
+          inRange: true,
+        });
+
+        // 2. 穿上沿限价兑现带 (40%) [+20% -> +45%]
+        const chaseUpPrice = entryPrice * (1 + maxUpPct);
+        const chaseLowerTick = coreUpperTick;
+        const chaseUpperTick = LpService.alignTick(LpService.priceToTick(chaseUpPrice), tickSpacing);
+        segments.push({
+          segmentName: `穿上沿限价兑现带 (40%) [+${this.config.singleSidedUpperCorePct || 20}%~+${this.config.singleSidedUpperMaxPct || 45}%]`,
+          minPriceUsd: LpService.tickToPrice(chaseLowerTick),
+          maxPriceUsd: LpService.tickToPrice(chaseUpperTick),
+          lowerTick: chaseLowerTick,
+          upperTick: chaseUpperTick,
+          capitalSharePct: 40,
+          capitalAllocatedUsd: capitalTotal * 0.4,
+          inRange: false,
+        });
+
+        return segments;
+      }
+
+      // Legacy Asymmetric Upper Zone Mode
       // 1. Core Fee Zone (40%)
       const coreUpPrice = entryPrice * (1 + this.config.pumpCoreUpPct / 100);
       const coreLowerTick = LpService.alignTick(LpService.priceToTick(entryPrice), tickSpacing);
@@ -838,6 +891,8 @@ export class LpService {
       netPnlUsd: 0,
       netPnlPct: 0,
       rebalanceCount: 0,
+      upperPiercedTargetPriceUsd: ranges.reduce((max, r) => Math.max(max, r.maxPriceUsd), params.priceUsd),
+      upperPiercedProgressPct: 0,
       status: "ACTIVE",
       txHistory: [txRecord],
     };
@@ -991,7 +1046,44 @@ export class LpService {
           }
         }
 
-        // 3. Risk & Circuit Breaker Exit Conditions
+        // 3. Single-Sided Range Order: Update Upper Pierced Progress
+        const maxRangePrice = pos.ranges.reduce((max, r) => Math.max(max, r.maxPriceUsd), pos.entryPriceUsd);
+        pos.upperPiercedTargetPriceUsd = maxRangePrice;
+        const targetDelta = maxRangePrice - pos.entryPriceUsd;
+        const priceGain = livePrice - pos.entryPriceUsd;
+        pos.upperPiercedProgressPct = targetDelta > 0
+          ? Math.min(100, Math.max(0, Math.round((priceGain / targetDelta) * 100)))
+          : 0;
+
+        // A. Upper Boundary Pierced Check (穿上沿限价卖出获利清仓)
+        // In Uniswap V3 math, once livePrice >= upperTick, 100% of the meme token is converted into USDG.
+        // We immediately withdraw liquidity to lock in 100% principal + capital gain + accrued fees before price can retrace.
+        const isUpperPierced = (pos.stage === "PUMP" || (this.config.pumpMode === "SINGLE_SIDED_RANGE_ORDER"))
+          && livePrice >= maxRangePrice;
+
+        if (isUpperPierced && (this.config.enableUpperPiercedExit !== false)) {
+          await this.closePosition(
+            pos.id,
+            "CLOSED_TAKEPROFIT_PIERCED",
+            `🎯 价格强势击穿单边做市区间上沿 $${maxRangePrice.toFixed(4)} (代币已100%限价卖出为USDG，穿上沿撤池锁定暴利与手续费 $${pos.feeEarnedUsd.toFixed(2)})`,
+          );
+          continue;
+        }
+
+        // B. Fast Stop Loss Check (单边快速防崩止损)
+        const fastSlThreshold = this.config.fastStopLossPct ?? -8;
+        const priceDropPct = ((livePrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
+        const isFastSlBreached = priceDropPct <= fastSlThreshold;
+        if (isFastSlBreached && pos.stage === "PUMP") {
+          await this.closePosition(
+            pos.id,
+            "CLOSED_STOPLOSS",
+            `🛑 触及单边做市快速止损线 (${priceDropPct.toFixed(1)}% <= ${fastSlThreshold}%)，闪电撤池规避山寨币归零风险`,
+          );
+          continue;
+        }
+
+        // 4. Risk & Circuit Breaker Exit Conditions
         // A. Net PnL Stop Loss Breached
         const isNetLossBreached = pos.netPnlPct <= this.config.netPnlStopLossPct;
 
@@ -1092,7 +1184,8 @@ export class LpService {
       | "CLOSED_STOPLOSS"
       | "CLOSED_VOL_DROP"
       | "CLOSED_TIMEOUT"
-      | "CLOSED_MANUAL",
+      | "CLOSED_MANUAL"
+      | "CLOSED_TAKEPROFIT_PIERCED",
     reason: string,
   ): Promise<LpPosition | null> {
     const pos = this.activePositions.get(positionId);

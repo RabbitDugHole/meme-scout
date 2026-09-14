@@ -1483,8 +1483,9 @@ export function formatComprehensiveLpReport(params: {
   const pnlSign = isPos ? "+" : "";
 
   const reasonMap: Record<string, string> = {
+    CLOSED_TAKEPROFIT_PIERCED: "🎯 价格击穿单边上沿 (Range Order 100%兑换USDG限价获利，穿上沿撤池锁定暴利与手续费)",
     CLOSED_PROFIT: "🎯 止盈收割离场 (大幅盈利且叙事放缓)",
-    CLOSED_STOPLOSS: "🛑 击穿下沿防护 (价格破位紧急熔断 Flash Exit)",
+    CLOSED_STOPLOSS: "🛑 快速防崩止损 (价格击穿下沿紧急熔断 Flash Exit)",
     CLOSED_VOL_DROP: "📉 5m量能腰斩枯竭 (无流动摩擦立即撤出)",
     CLOSED_TIMEOUT: "⏱️ 最大持仓超时 (达到设定生命周期)",
     CLOSED_MANUAL: "👤 手动一键撤池",
@@ -1500,13 +1501,15 @@ export function formatComprehensiveLpReport(params: {
     const itemIsPos = item.netPnlUsd >= 0;
     const itemSign = itemIsPos ? "+" : "-";
     const tag =
-      item.status === "CLOSED_PROFIT"
-        ? "🎯盈利"
-        : item.status === "CLOSED_VOL_DROP"
-          ? "📉量竭"
-          : item.status === "CLOSED_STOPLOSS"
-            ? "🛑止损"
-            : "撤池";
+      item.status === "CLOSED_TAKEPROFIT_PIERCED"
+        ? "🚀穿沿止盈"
+        : item.status === "CLOSED_PROFIT"
+          ? "🎯盈利"
+          : item.status === "CLOSED_VOL_DROP"
+            ? "📉量竭"
+            : item.status === "CLOSED_STOPLOSS"
+              ? "🛑止损"
+              : "撤池";
     return `${idx + 1}. $${item.symbol}: ${itemSign}$${Math.abs(item.netPnlUsd).toFixed(2)} [${tag} · 手续费+$${item.feeEarnedUsd.toFixed(1)}]`;
   });
 

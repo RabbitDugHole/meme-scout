@@ -518,7 +518,14 @@ export type LpConfig = {
   minOpportunityVolume2hUsd: number; // default: 10000 USD
   maxOpportunityActiveLiqUsd: number; // default: 80000 USD
   opportunityAlertCooldownMin: number; // default: 60 minutes
-  
+
+  // Single-Sided Upper Range Order (单边上方限价卖出收租) Settings
+  enableUpperPiercedExit: boolean; // default: true (穿上沿全额兑回 USDG 自动结项撤池)
+  pumpMode?: "SINGLE_SIDED_RANGE_ORDER" | "ASYMMETRIC_UPPER"; // default: "SINGLE_SIDED_RANGE_ORDER"
+  singleSidedUpperCorePct?: number; // default: 20 (+20% 核心收租区间)
+  singleSidedUpperMaxPct?: number; // default: 45 (+45% 穿上沿结项止盈区间)
+  fastStopLossPct?: number; // default: -8 (-8% 快速防崩止损)
+
   larkNotification: boolean;
   webhookUrl?: string;
   walletAddress?: string;
@@ -583,6 +590,9 @@ export type LpPosition = {
   rebalanceCount: number;
   lastRebalanceTime?: string;
   
+  upperPiercedTargetPriceUsd?: number; // Target price where 100% tokens converted to USDG
+  upperPiercedProgressPct?: number; // 0-100% progress towards piercing upper bound
+
   status:
     | "ACTIVE"
     | "PRINCIPAL_SECURED"
@@ -591,7 +601,8 @@ export type LpPosition = {
     | "CLOSED_STOPLOSS"
     | "CLOSED_VOL_DROP"
     | "CLOSED_TIMEOUT"
-    | "CLOSED_MANUAL";
+    | "CLOSED_MANUAL"
+    | "CLOSED_TAKEPROFIT_PIERCED";
   exitReason?: string;
   closeTime?: string;
   txHistory: LpTxRecord[];

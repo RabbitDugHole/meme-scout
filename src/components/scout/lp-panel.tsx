@@ -97,6 +97,13 @@ export function LpPanel({
   const [cfgNetPnlStopLoss, setCfgNetPnlStopLoss] = useState(-8);
   const [cfgMinOppFeeRate, setCfgMinOppFeeRate] = useState(80);
 
+  // Single-Sided Upper Range Order States
+  const [cfgEnableUpperPiercedExit, setCfgEnableUpperPiercedExit] = useState(true);
+  const [cfgPumpMode, setCfgPumpMode] = useState<"SINGLE_SIDED_RANGE_ORDER" | "ASYMMETRIC_UPPER">("SINGLE_SIDED_RANGE_ORDER");
+  const [cfgSingleSidedCorePct, setCfgSingleSidedCorePct] = useState(20);
+  const [cfgSingleSidedMaxPct, setCfgSingleSidedMaxPct] = useState(45);
+  const [cfgFastStopLossPct, setCfgFastStopLossPct] = useState(-8);
+
   // Sync form state when config loads
   const [hasSynced, setHasSynced] = useState(false);
   if (config && !hasSynced) {
@@ -114,6 +121,11 @@ export function LpPanel({
     if (config.rebalanceDriftThresholdPct !== undefined) setCfgRebalanceDrift(config.rebalanceDriftThresholdPct);
     if (config.netPnlStopLossPct !== undefined) setCfgNetPnlStopLoss(config.netPnlStopLossPct);
     if (config.minOpportunityFeeRatePct !== undefined) setCfgMinOppFeeRate(config.minOpportunityFeeRatePct);
+    if (config.enableUpperPiercedExit !== undefined) setCfgEnableUpperPiercedExit(config.enableUpperPiercedExit);
+    if (config.pumpMode !== undefined) setCfgPumpMode(config.pumpMode);
+    if (config.singleSidedUpperCorePct !== undefined) setCfgSingleSidedCorePct(config.singleSidedUpperCorePct);
+    if (config.singleSidedUpperMaxPct !== undefined) setCfgSingleSidedMaxPct(config.singleSidedUpperMaxPct);
+    if (config.fastStopLossPct !== undefined) setCfgFastStopLossPct(config.fastStopLossPct);
     setHasSynced(true);
   }
 
@@ -882,6 +894,70 @@ export function LpPanel({
               />
             </div>
 
+            {/* Param 14: Single-Sided Upper Range Order Mode */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium flex items-center gap-1">
+                <span>做市策略模式</span>
+                <span className="text-[10px] text-cyan-400 font-normal">(Range Order 限价卖)</span>
+              </label>
+              <select
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground font-medium"
+                value={cfgPumpMode}
+                onChange={(e) => setCfgPumpMode(e.target.value as any)}
+              >
+                <option value="SINGLE_SIDED_RANGE_ORDER">🚀 单边上方限价卖出 (推荐: 穿上沿收割)</option>
+                <option value="ASYMMETRIC_UPPER">⚖️ 经典非对称做市 (保留底仓)</option>
+              </select>
+            </div>
+
+            {/* Param 15: Upper Pierced Auto Exit */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium flex items-center gap-1">
+                <span>穿上沿全额限价兑回 USDG 撤池</span>
+              </label>
+              <select
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground font-medium"
+                value={cfgEnableUpperPiercedExit ? "on" : "off"}
+                onChange={(e) => setCfgEnableUpperPiercedExit(e.target.value === "on")}
+              >
+                <option value="on">🎯 开启 (穿上沿100%全额兑USDG并撤池锁定暴利)</option>
+                <option value="off">❌ 关闭 (突破上沿后继续挂单)</option>
+              </select>
+            </div>
+
+            {/* Param 16: Single Sided Upper Core % */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">单边核心收租区间 (+% 从现价)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgSingleSidedCorePct}
+                onChange={(e) => setCfgSingleSidedCorePct(Number(e.target.value))}
+              />
+            </div>
+
+            {/* Param 17: Single Sided Upper Max % */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">穿上沿自动止盈点 (+% 从现价)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgSingleSidedMaxPct}
+                onChange={(e) => setCfgSingleSidedMaxPct(Number(e.target.value))}
+              />
+            </div>
+
+            {/* Param 18: Fast Stop Loss */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">单边快速防崩止损 (%)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgFastStopLossPct}
+                onChange={(e) => setCfgFastStopLossPct(Number(e.target.value))}
+              />
+            </div>
+
             {/* Actions */}
             <div className="flex items-end gap-2 col-span-1 sm:col-span-2 md:col-span-3">
               <Button
@@ -902,6 +978,11 @@ export function LpPanel({
                     rebalanceDriftThresholdPct: cfgRebalanceDrift,
                     netPnlStopLossPct: cfgNetPnlStopLoss,
                     minOpportunityFeeRatePct: cfgMinOppFeeRate,
+                    enableUpperPiercedExit: cfgEnableUpperPiercedExit,
+                    pumpMode: cfgPumpMode,
+                    singleSidedUpperCorePct: cfgSingleSidedCorePct,
+                    singleSidedUpperMaxPct: cfgSingleSidedMaxPct,
+                    fastStopLossPct: cfgFastStopLossPct,
                   })
                 }
                 disabled={updateConfigMut.isPending}
@@ -1329,6 +1410,52 @@ export function LpPanel({
                     </div>
                   </div>
 
+                  {/* Single-Sided Upper Range Order Piercing Tracker */}
+                  {pos.upperPiercedTargetPriceUsd && pos.upperPiercedTargetPriceUsd > pos.entryPriceUsd && (
+                    <div className="rounded-lg bg-gradient-to-r from-amber-500/10 via-emerald-500/10 to-blue-500/10 border border-emerald-500/30 p-2.5 flex flex-col gap-1.5">
+                      <div className="flex flex-wrap items-center justify-between text-xs gap-1">
+                        <span className="font-semibold text-foreground flex items-center gap-1.5">
+                          <span>🎯 单边上方限价卖进度:</span>
+                          <span className="text-emerald-400 font-mono">
+                            现价 ${pos.currentPriceUsd} → 目标上沿 ${pos.upperPiercedTargetPriceUsd.toFixed(6)}
+                          </span>
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-muted-foreground text-[11px]">
+                            距100%兑回USDG还需:{" "}
+                            <strong
+                              className={cn(
+                                pos.currentPriceUsd >= pos.upperPiercedTargetPriceUsd
+                                  ? "text-emerald-400"
+                                  : "text-amber-300",
+                              )}
+                            >
+                              {pos.currentPriceUsd >= pos.upperPiercedTargetPriceUsd
+                                ? "已穿上沿 (触发止盈撤池)"
+                                : `+${(((pos.upperPiercedTargetPriceUsd - pos.currentPriceUsd) / pos.currentPriceUsd) * 100).toFixed(1)}%`}
+                            </strong>
+                          </span>
+                          {(pos.upperPiercedProgressPct || 0) >= 80 && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] border-emerald-500/40 text-emerald-300 bg-emerald-500/20 animate-pulse"
+                            >
+                              🔥 逼近上沿自动止盈
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="w-full bg-secondary/80 rounded-full h-2 overflow-hidden border border-border/40">
+                        <div
+                          className="bg-gradient-to-r from-cyan-500 via-emerald-400 to-amber-400 h-full transition-all duration-500"
+                          style={{
+                            width: `${Math.min(100, Math.max(5, pos.upperPiercedProgressPct || 0))}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* V3 Ranges Visual Breakdown */}
                   <div className="rounded-lg bg-secondary/40 border border-border/40 p-2.5 flex flex-col gap-1.5">
                     <span className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
@@ -1451,8 +1578,14 @@ export function LpPanel({
                       >
                         {isPos ? "+" : ""}${pos.netPnlUsd.toFixed(2)} ({isPos ? "+" : ""}{pos.netPnlPct.toFixed(1)}%)
                       </td>
-                      <td className="py-2.5 px-3 text-muted-foreground max-w-[200px] truncate">
-                        {pos.exitReason || pos.status}
+                      <td className="py-2.5 px-3 text-muted-foreground max-w-[220px] truncate">
+                        {pos.status === "CLOSED_TAKEPROFIT_PIERCED" ? (
+                          <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                            🎯 穿上沿限价止盈
+                          </span>
+                        ) : (
+                          pos.exitReason || pos.status
+                        )}
                       </td>
                     </tr>
                   );

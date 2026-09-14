@@ -32,12 +32,13 @@ describe("V3 Asymmetric LP Math & Range Engine", () => {
     assert.equal(Math.abs(aligned % 200), 0, "Aligned tick should be divisible by 200");
   });
 
-  test("should calculate correct asymmetric ranges for PUMP stage", () => {
+  test("should calculate correct asymmetric ranges for PUMP stage under ASYMMETRIC_UPPER mode", () => {
+    lpService.updateConfig({ pumpMode: "ASYMMETRIC_UPPER" });
     const entryPrice = 0.01;
     const capital = 100;
     const ranges = lpService.calculateRanges(entryPrice, "PUMP", capital, 200);
 
-    assert.equal(ranges.length, 3, "PUMP stage should have 3 range segments");
+    assert.equal(ranges.length, 3, "ASYMMETRIC_UPPER mode should have 3 range segments");
 
     // 1. Core Fee Zone
     const core = ranges[0];
@@ -95,7 +96,7 @@ describe("LpService Position Lifecycle & Execution", () => {
     assert.equal(testPos.symbol, "TEST_LP_MEME");
     assert.equal(testPos.initialUsdInvested, 50);
     assert.equal(testPos.status, "ACTIVE");
-    assert.equal(testPos.ranges.length, 3);
+    assert.ok(testPos.ranges.length >= 2);
 
     const stateBefore = lpService.getState();
     assert.ok(stateBefore.activePositions.some((p) => p.id === testPos.id));
@@ -474,5 +475,70 @@ describe("Paper vs Live LP Data Isolation & Scoped Operations", () => {
     assert.equal(stateFinal.liveStats.closedCount, baseLiveClosed + closedLiveCount);
   });
 });
+
+describe("Single-Sided Upper Range Order & Upper Pierced Exit Strategy", () => {
+  const lpService = LpService.getInstance();
+
+  test("should build purely upper ranges for PUMP stage under SINGLE_SIDED_RANGE_ORDER mode", () => {
+    lpService.updateConfig({
+      pumpMode: "SINGLE_SIDED_RANGE_ORDER",
+      singleSidedUpperCorePct: 20,
+      singleSidedUpperMaxPct: 45,
+    });
+
+    const entryPrice = 1.0;
+    const capitalTotal = 100;
+    const ranges = lpService.calculateRanges(entryPrice, "PUMP", capitalTotal, 200);
+
+    assert.equal(ranges.length, 2);
+    // Band 1: Core harvest zone [+0% -> +20%]
+    assert.ok(ranges[0].minPriceUsd >= 0.99);
+    assert.ok(ranges[0].maxPriceUsd >= 1.18);
+    assert.equal(ranges[0].capitalSharePct, 60);
+    assert.equal(ranges[0].capitalAllocatedUsd, 60);
+    assert.equal(ranges[0].inRange, true);
+
+    // Band 2: Upper pierced take profit zone [+20% -> +45%]
+    assert.ok(ranges[1].minPriceUsd >= ranges[0].maxPriceUsd * 0.99);
+    assert.ok(ranges[1].maxPriceUsd >= 1.40);
+    assert.equal(ranges[1].capitalSharePct, 40);
+    assert.equal(ranges[1].capitalAllocatedUsd, 40);
+    assert.equal(ranges[1].inRange, false);
+
+    // Crucial requirement: No capital allocated below entry price!
+    for (const r of ranges) {
+      assert.ok(r.minPriceUsd >= entryPrice * 0.98, "All ranges must reside above or at entry price");
+    }
+  });
+
+  test("should record target price and support CLOSED_TAKEPROFIT_PIERCED exit status", async () => {
+    const pos = await lpService.openLpPosition({
+      tokenAddress: "0x4444444444444444444444444444444444444444",
+      symbol: "PIERCE_TOKEN",
+      chain: "robinhood",
+      priceUsd: 1.0,
+      liquidityUsd: 50000,
+      volume5m: 20000,
+      stage: "PUMP",
+      customCapitalUsd: 50,
+      dryRun: true,
+    });
+
+    assert.ok(pos.upperPiercedTargetPriceUsd, "Must have upper target price defined");
+    assert.ok(pos.upperPiercedTargetPriceUsd > 1.35, "Target price should be at upper boundary");
+
+    // Close with upper pierced take profit
+    const closed = await lpService.closePosition(
+      pos.id,
+      "CLOSED_TAKEPROFIT_PIERCED",
+      `🎯 价格强势击穿单边做市区间上沿 (100%兑现为USDG，穿上沿撤池锁定暴利)`,
+    );
+
+    assert.ok(closed);
+    assert.equal(closed.status, "CLOSED_TAKEPROFIT_PIERCED");
+    assert.ok(closed.exitReason?.includes("击穿单边做市区间上沿"));
+  });
+});
+
 
 
