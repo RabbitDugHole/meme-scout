@@ -883,6 +883,7 @@ export class LpService {
 
     let isDryRun = params.dryRun !== undefined ? params.dryRun : this.config.dryRun;
     let onChainTxHash: `0x${string}` | null = null;
+    let mintedTokenId: string | undefined = undefined;
     let liveExecutionReason: string | undefined = undefined;
 
     if (params.mockLive) {
@@ -893,6 +894,9 @@ export class LpService {
     // Strict Live Guards
     if (!isDryRun && !params.mockLive) {
       if (!this.config.hasRhKey || !this.config.walletAddress || !this.rawPrivateKey) {
+        if (params.dryRun === false) {
+          throw new Error("未绑定实盘做市私钥，请先点击【导入做市钱包】绑定私钥");
+        }
         isDryRun = true;
         liveExecutionReason = "未绑定实盘私钥，自动降级为模拟测算";
         console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
@@ -903,15 +907,20 @@ export class LpService {
           const ethNum = Number(status.ethBalance || "0");
           const usdgNum = Number(status.usdgBalance || "0");
           if (ethNum < 0.0005) {
+            const msg = `Gas ETH 不足 (${status.ethBalance} < 0.0005 ETH)，无法支付链上 Gas 费`;
+            if (params.dryRun === false) throw new Error(msg);
             isDryRun = true;
-            liveExecutionReason = `Gas ETH 不足 (${status.ethBalance} < 0.0005 ETH)，自动降级为模拟测算`;
+            liveExecutionReason = `${msg}，自动降级为模拟测算`;
             console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
           } else if (usdgNum < capitalInvested) {
+            const msg = `USDG 本金不足 ($${status.usdgBalance} < $${capitalInvested.toFixed(2)})`;
+            if (params.dryRun === false) throw new Error(msg);
             isDryRun = true;
-            liveExecutionReason = `USDG 本金不足 ($${status.usdgBalance} < $${capitalInvested.toFixed(2)})，自动降级为模拟测算`;
+            liveExecutionReason = `${msg}，自动降级为模拟测算`;
             console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
           }
         } catch (balErr: any) {
+          if (params.dryRun === false) throw balErr;
           isDryRun = true;
           liveExecutionReason = `链上余额核验超时 (${balErr?.message})，自动降级为模拟测算`;
         }
@@ -928,73 +937,161 @@ export class LpService {
           });
 
           const npmAddress = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
+          const factoryAddress = UNISWAP_V3_ROBINHOOD.FACTORY as `0x${string}`;
           const usdgAddress = USDG as `0x${string}`;
           const tokenAddress = params.tokenAddress as `0x${string}`;
 
-          // Sort tokens
-          const isToken0 = tokenAddress.toLowerCase() < usdgAddress.toLowerCase();
-          const token0 = isToken0 ? tokenAddress : usdgAddress;
-          const token1 = isToken0 ? usdgAddress : tokenAddress;
+          // Check if pool exists on Uniswap V3 Factory
+          const factoryAbi = parseAbi([
+            "function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)",
+          ]);
+          const poolAbi = parseAbi([
+            "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
+          ]);
 
-          // Approve USDG if needed
-          const capitalWei = BigInt(Math.floor(capitalInvested * 1e6));
-          const currentAllowance = await this.rhClient.readContract({
-            address: usdgAddress,
-            abi: ERC20_ABI,
-            functionName: "allowance",
-            args: [account.address, npmAddress],
-          });
+          // Normalize fee tier for V3 (V3 only supports 100, 500, 3000, 10000)
+          let targetFee = feeTier;
+          if (targetFee > 10000) {
+            targetFee = 10000;
+          }
 
-          if (currentAllowance < capitalWei) {
-            console.log(`[LpService] 🔑 授权 USDG 给 Uniswap V3 PositionManager...`);
-            const approveHash = await wallet.writeContract({
+          // Try finding a valid V3 pool with USDG
+          let activeV3Pool: `0x${string}` = "0x0000000000000000000000000000000000000000";
+          let selectedFee = targetFee;
+
+          for (const testFee of [targetFee, 10000, 3000, 500, 100]) {
+            try {
+              const p = await this.rhClient.readContract({
+                address: factoryAddress,
+                abi: factoryAbi,
+                functionName: "getPool",
+                args: [tokenAddress, usdgAddress, testFee],
+              });
+              if (p && p !== "0x0000000000000000000000000000000000000000") {
+                activeV3Pool = p;
+                selectedFee = testFee;
+                break;
+              }
+            } catch {}
+          }
+
+          if (activeV3Pool === "0x0000000000000000000000000000000000000000") {
+            const v4Hint = params.pairAddress
+              ? ` (当前主要在 Uniswap V4 / Barker 协议交易，PoolId: ${params.pairAddress.slice(0, 10)}...)`
+              : "";
+            const msg = `标的 $${params.symbol} 尚未在 Uniswap V3 初始化做市池${v4Hint}。实盘做市仅支持 Uniswap V3 池，或在【模拟】标签下进行策略测算。`;
+            if (params.dryRun === false) {
+              throw new Error(msg);
+            } else {
+              isDryRun = true;
+              liveExecutionReason = msg;
+              console.warn(`[LpService] ⚠️ ${msg}`);
+            }
+          } else {
+            // Read slot0 tick
+            const slot0 = await this.rhClient.readContract({
+              address: activeV3Pool,
+              abi: poolAbi,
+              functionName: "slot0",
+            });
+            const currentTick = Number(slot0[1]);
+            const tickSpacing =
+              selectedFee === 100 ? 1 : selectedFee === 500 ? 10 : selectedFee === 3000 ? 60 : 200;
+
+            // Sort tokens
+            const isToken0 = tokenAddress.toLowerCase() < usdgAddress.toLowerCase();
+            const token0 = isToken0 ? tokenAddress : usdgAddress;
+            const token1 = isToken0 ? usdgAddress : tokenAddress;
+
+            // Approve USDG if needed
+            const capitalWei = BigInt(Math.floor(capitalInvested * 1e6));
+            const currentAllowance = await this.rhClient.readContract({
               address: usdgAddress,
               abi: ERC20_ABI,
-              functionName: "approve",
-              args: [npmAddress, 2n ** 256n - 1n],
+              functionName: "allowance",
+              args: [account.address, npmAddress],
             });
-            await this.rhClient.waitForTransactionReceipt({ hash: approveHash });
-            console.log(`[LpService] ✅ USDG 授权成功: ${approveHash}`);
-          }
 
-          // Mint LP position
-          const tickLower = ranges[0].lowerTick;
-          const tickUpper = ranges[ranges.length - 1].upperTick;
-          const amount0Desired = isToken0 ? 0n : capitalWei;
-          const amount1Desired = isToken0 ? capitalWei : 0n;
-          const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+            if (currentAllowance < capitalWei) {
+              console.log(`[LpService] 🔑 授权 USDG 给 Uniswap V3 PositionManager...`);
+              const approveHash = await wallet.writeContract({
+                address: usdgAddress,
+                abi: ERC20_ABI,
+                functionName: "approve",
+                args: [npmAddress, 2n ** 256n - 1n],
+              });
+              await this.rhClient.waitForTransactionReceipt({ hash: approveHash });
+              console.log(`[LpService] ✅ USDG 授权成功: ${approveHash}`);
+            }
 
-          console.log(`[LpService] 🚀 正在向 Uniswap V3 NPM 发起上链铸造 LP 头寸: $${params.symbol}...`);
-          const mintHash = await wallet.writeContract({
-            address: npmAddress,
-            abi: POSITION_MANAGER_ABI,
-            functionName: "mint",
-            args: [
-              {
-                token0,
-                token1,
-                fee: feeTier,
-                tickLower,
-                tickUpper,
-                amount0Desired,
-                amount1Desired,
-                amount0Min: 0n,
-                amount1Min: 0n,
-                recipient: account.address,
-                deadline,
-              },
-            ],
-          });
+            // Single-sided USDG range order (below current price)
+            let tickLower: number;
+            let tickUpper: number;
+            let amount0Desired: bigint;
+            let amount1Desired: bigint;
 
-          console.log(`[LpService] ⏳ 交易已广播: ${mintHash}，等待链上确认...`);
-          const receipt = await this.rhClient.waitForTransactionReceipt({ hash: mintHash });
-          if (receipt.status === "success") {
-            onChainTxHash = mintHash;
-            console.log(`[LpService] 🎯 真实链上 LP 铸造成功! TxHash: ${mintHash}`);
-          } else {
-            throw new Error(`链上交易回滚 (Reverted): ${mintHash}`);
+            if (token1.toLowerCase() === usdgAddress.toLowerCase()) {
+              // token1 is USDG: tickUpper <= currentTick
+              tickLower = Math.floor((currentTick - 1000) / tickSpacing) * tickSpacing;
+              tickUpper = Math.floor((currentTick - 200) / tickSpacing) * tickSpacing;
+              amount0Desired = 0n;
+              amount1Desired = capitalWei;
+            } else {
+              // token0 is USDG: tickLower >= currentTick
+              tickLower = Math.ceil((currentTick + 200) / tickSpacing) * tickSpacing;
+              tickUpper = Math.ceil((currentTick + 1000) / tickSpacing) * tickSpacing;
+              amount0Desired = capitalWei;
+              amount1Desired = 0n;
+            }
+
+            const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+
+            console.log(`[LpService] 🚀 正在向 Uniswap V3 NPM 发起上链铸造 LP 头寸: $${params.symbol}...`);
+            const mintHash = await wallet.writeContract({
+              address: npmAddress,
+              abi: POSITION_MANAGER_ABI,
+              functionName: "mint",
+              args: [
+                {
+                  token0,
+                  token1,
+                  fee: selectedFee,
+                  tickLower,
+                  tickUpper,
+                  amount0Desired,
+                  amount1Desired,
+                  amount0Min: 0n,
+                  amount1Min: 0n,
+                  recipient: account.address,
+                  deadline,
+                },
+              ],
+            });
+
+            console.log(`[LpService] ⏳ 交易已广播: ${mintHash}，等待链上确认...`);
+            const receipt = await this.rhClient.waitForTransactionReceipt({ hash: mintHash });
+            if (receipt.status === "success") {
+              onChainTxHash = mintHash;
+              // Extract tokenId from Transfer event logs
+              const transferLog = receipt.logs.find(
+                (l) =>
+                  l.address.toLowerCase() === npmAddress.toLowerCase() &&
+                  l.topics[0] === "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" &&
+                  l.topics.length === 4,
+              );
+              if (transferLog && transferLog.topics[3]) {
+                mintedTokenId = BigInt(transferLog.topics[3]).toString();
+              }
+              console.log(`[LpService] 🎯 真实链上 LP 铸造成功! TokenId: ${mintedTokenId || "N/A"}, TxHash: ${mintHash}`);
+            } else {
+              throw new Error(`链上交易回滚 (Reverted): ${mintHash}`);
+            }
           }
         } catch (err: any) {
+          if (params.dryRun === false) {
+            // User explicitly requested real on-chain execution, throw the failure so UI surfaces it!
+            throw new Error(`真实链上做市未完成: ${err.shortMessage || err.message}`);
+          }
           isDryRun = true;
           liveExecutionReason = `链上做市未能完成 (${err.shortMessage || err.message})，为保护资金安全已转为模拟测算`;
           console.warn(`[LpService] ⚠️ 真实上链未成功，安全降级模拟:`, err?.message || err);
@@ -1044,6 +1141,8 @@ export class LpService {
       isRwa,
       stockSymbol,
       dryRun: isDryRun,
+      tokenId: mintedTokenId,
+      onChainTxHash: onChainTxHash || undefined,
       entryTime: new Date().toISOString(),
       entryPriceUsd: params.priceUsd,
       initialUsdInvested: capitalInvested,

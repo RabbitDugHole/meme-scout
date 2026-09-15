@@ -608,6 +608,8 @@ export type LpPosition = {
     | "CLOSED_TAKEPROFIT_PIERCED";
   exitReason?: string;
   closeTime?: string;
+  tokenId?: string;
+  onChainTxHash?: string;
   txHistory: LpTxRecord[];
 };
 

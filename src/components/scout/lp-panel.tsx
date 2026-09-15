@@ -187,15 +187,22 @@ export function LpPanel({
           stockSymbol: pool.stockSymbol,
           category: pool.category,
           activeBandLiquidityUsd: pool.activeBandLiquidityUsd,
-          dryRun: config?.dryRun ?? true,
+          dryRun: displayMode === "paper",
         },
       }),
     onSuccess: (pos) => {
       qc.invalidateQueries({ queryKey: ["lpState"] });
-      toast.success(`已成功为 $${pos.symbol} 建立做市头寸！`);
+      if (!pos.dryRun) {
+        toast.success(`🎉 真实链上做市头寸已铸造: $${pos.symbol} (NFT #${pos.tokenId || ""})`);
+      } else if (displayMode === "live") {
+        toast.warning(`已转入【模拟盘】建立测算头寸（标的仅在 V4 协议运行，未扣除链上资金）`);
+        setDisplayMode("paper");
+      } else {
+        toast.success(`已成功在模拟盘为 $${pos.symbol} 建立做市头寸！`);
+      }
     },
     onError: (err: any) => {
-      toast.error(`快速建仓失败: ${err?.message || err}`);
+      toast.error(`建仓失败: ${err?.message || err}`);
     },
   });
 
@@ -1152,6 +1159,21 @@ export function LpPanel({
                       >
                         {pool.feeTierPct}%
                       </Badge>
+                      {pool.feeTierBps >= 40000 || pool.poolId.length === 66 ? (
+                        <Badge
+                          variant="outline"
+                          className="text-[9px] px-1 py-0 border-indigo-500/40 text-indigo-300 bg-indigo-500/10"
+                        >
+                          V4 Barker
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="text-[9px] px-1 py-0 border-blue-500/40 text-blue-300 bg-blue-500/10"
+                        >
+                          V3
+                        </Badge>
+                      )}
                       {pool.isRwa && (
                         <Badge className="text-[9px] px-1 py-0 bg-purple-500/10 text-purple-400 border border-purple-500/30">
                           美股 {pool.stockSymbol}
@@ -1264,10 +1286,27 @@ export function LpPanel({
         </div>
 
         {activePositions.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-2">
+          <div className="rounded-xl border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground flex flex-col items-center gap-3">
             <Layers className="size-8 text-muted-foreground/40" />
-            <div>暂无正在做市的流动性头寸</div>
-            <div className="text-xs text-muted-foreground/70">
+            <div className="font-medium text-foreground">
+              当前【{displayMode === "live" ? "实盘" : "模拟"}】模式下暂无活跃做市池
+            </div>
+            {displayMode === "live" && positions.some((p) => p.dryRun) && (
+              <div className="flex flex-col items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs max-w-md">
+                <span>
+                  💡 模拟盘中检测到 {positions.filter((p) => p.dryRun).length} 个活跃测算池（未部署 V3 池的标的已安全转入模拟测算，本金未扣除）。
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs border-amber-500/40 text-amber-300 hover:bg-amber-500/20"
+                  onClick={() => setDisplayMode("paper")}
+                >
+                  切换至【模拟测算】查看
+                </Button>
+              </div>
+            )}
+            <div className="text-xs text-muted-foreground/70 max-w-md">
               当扫描雷达或 TG 频道发现满足 5m 成交量 / 流动性 ≥ {config?.minVolumeToLiquidityRatio ?? 1.5} 的高频标的时，系统将自动建仓并在区间内收租。
             </div>
           </div>
@@ -1302,12 +1341,32 @@ export function LpPanel({
                           🛡️ 模拟
                         </Badge>
                       ) : (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] border-emerald-500/40 text-emerald-300 bg-emerald-500/10 font-semibold"
-                        >
-                          🚀 实盘
-                        </Badge>
+                        <>
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] border-emerald-500/40 text-emerald-300 bg-emerald-500/10 font-semibold"
+                          >
+                            🚀 实盘
+                          </Badge>
+                          {pos.tokenId && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] border-blue-500/40 text-blue-300 bg-blue-500/10"
+                            >
+                              NFT #{pos.tokenId}
+                            </Badge>
+                          )}
+                          {pos.onChainTxHash && (
+                            <a
+                              href={`https://robinhoodchain.blockscout.com/tx/${pos.onChainTxHash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[10px] text-blue-400 hover:underline inline-flex items-center gap-0.5"
+                            >
+                              链上凭证 <ExternalLink className="size-2.5" />
+                            </a>
+                          )}
+                        </>
                       )}
                       <Badge
                         variant="outline"
