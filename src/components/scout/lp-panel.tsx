@@ -1291,10 +1291,10 @@ export function LpPanel({
             <div className="font-medium text-foreground">
               当前【{displayMode === "live" ? "实盘" : "模拟"}】模式下暂无活跃做市池
             </div>
-            {displayMode === "live" && positions.some((p) => p.dryRun) && (
+            {displayMode === "live" && allActivePositions.some((p) => p.dryRun) && (
               <div className="flex flex-col items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs max-w-md">
                 <span>
-                  💡 模拟盘中检测到 {positions.filter((p) => p.dryRun).length} 个活跃测算池（未部署 V3 池的标的已安全转入模拟测算，本金未扣除）。
+                  💡 模拟盘中检测到 {allActivePositions.filter((p) => p.dryRun).length} 个活跃测算池（未部署 V3 池的标的已安全转入模拟测算，本金未扣除）。
                 </span>
                 <Button
                   size="sm"
