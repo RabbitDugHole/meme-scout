@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatTgMemeAlarmText } from "./lark.ts";
-import { cleanChannelUsername, parseTelegramWebHtml } from "./tg-monitor.server.ts";
+import { cleanChannelUsername, parseTelegramWebHtml, parseTelegramPostText, tgMonitorService } from "./tg-monitor.server.ts";
+import { tradeService } from "./trade.server.ts";
+import { lpService } from "./lp.server.ts";
+import { backtestEngine } from "./backtest.server.ts";
 import type { TgTokenEvaluation } from "./types.ts";
 
 test("cleanChannelUsername should normalize URLs and usernames", () => {
@@ -147,4 +150,59 @@ test("parseTelegramWebHtml should correctly parse bobo8567 Robinhood channel for
   assert.equal(item.volume5mUsd, 18080);
   assert.equal(item.top10Pct, 34.8);
   assert.ok(item.tgSafety?.includes("正常"), "tgSafety should detect honeypot normal");
+});
+
+test("parseTelegramPostText should parse raw text from litehook or bot push for bobo9527 BSC channel", () => {
+  const rawText = `
+🔥 【BSC 聪明钱跟买】 🔥
+• 代币: BabyDoge (BABYDOGE)
+• 链: BSC
+• CA: 0xc748673057861a797275CD8A068AbB452456a329
+• 5分钟交易量: $50.5K
+• 市值: $1.2M
+• 3个聪明钱已买入，2个KOL跟进
+• Top 10 持仓占比: 28.5%
+• 安全: 蜜罐风险: 🟢 正常 | 税率: 0%
+  `.trim();
+
+  const parsed = parseTelegramPostText(rawText, "bobo9527", "bobo9527/99881");
+  assert.ok(parsed, "Parsed result must not be null");
+  assert.equal(parsed.symbol, "BABYDOGE");
+  assert.equal(parsed.address, "0xc748673057861a797275CD8A068AbB452456a329");
+  assert.equal(parsed.chain, "BSC");
+  assert.equal(parsed.volume5mUsd, 50500);
+  assert.equal(parsed.smartMoneyCount, 3);
+  assert.equal(parsed.kolCount, 2);
+  assert.equal(parsed.top10Pct, 28.5);
+  assert.equal(parsed.channel, "bobo9527");
+});
+
+test("tgMonitorService.ingestRawMessage should successfully process webhook message", async () => {
+  const rawText = `
+🔥 【Robinhood 早期异动】 🔥
+• 代币: TestRocket (ROCKET)
+• 平台: Barker
+• 链: Robinhood Chain
+• CA: 0x9999999999999999999999999999999999999999
+• 5分钟交易量: $30.0K
+• 市值: $90.0K
+• 5个聪明钱已介入
+• Top 10 持仓占比: 25.0%
+  `.trim();
+
+  const res = await tgMonitorService.ingestRawMessage({
+    text: rawText,
+    channel: "bobo8567",
+    postId: `test-post-${Date.now()}`,
+  });
+
+  assert.equal(res.success, true, "Webhook ingestion should succeed");
+  assert.ok(res.parsed);
+  assert.equal(res.parsed.symbol, "ROCKET");
+  assert.equal(res.parsed.address, "0x9999999999999999999999999999999999999999");
+  assert.equal(res.parsed.chain, "Robinhood Chain");
+  tgMonitorService.stop();
+  tradeService.stop();
+  lpService.stop();
+  backtestEngine.stop();
 });

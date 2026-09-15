@@ -142,6 +142,103 @@ function authPopupPlugin(): Plugin {
   };
 }
 
+function tgWebhookDevPlugin(): Plugin {
+  return {
+    name: "app:tg-webhook-dev",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        try {
+          const rawUrl = req.url ?? "";
+          const pathOnly = rawUrl.split("?", 1)[0] ?? "";
+          if (pathOnly !== "/api/tg-webhook") {
+            next();
+            return;
+          }
+
+          const method = (req.method ?? "GET").toUpperCase();
+          const urlObj = new URL(rawUrl, "http://localhost");
+
+          if (method === "GET") {
+            const text = urlObj.searchParams.get("text");
+            if (text) {
+              const mod = (await server.ssrLoadModule("/src/lib/scout/tg-monitor.server.ts")) as any;
+              const result = await mod.tgMonitorService.ingestRawMessage({
+                text,
+                channel: urlObj.searchParams.get("channel") || "tg_webhook",
+              });
+              res.statusCode = 200;
+              res.setHeader("content-type", "application/json; charset=utf-8");
+              res.end(JSON.stringify({ ok: result.success, message: result.message, data: result }));
+              return;
+            }
+            res.statusCode = 200;
+            res.setHeader("content-type", "application/json; charset=utf-8");
+            res.end(JSON.stringify({ status: "online", endpoint: "/api/tg-webhook" }));
+            return;
+          }
+
+          if (method === "POST") {
+            let bodyStr = "";
+            req.on("data", (chunk) => {
+              bodyStr += chunk;
+            });
+            req.on("end", async () => {
+              try {
+                let parsedBody: any = {};
+                try {
+                  parsedBody = JSON.parse(bodyStr);
+                } catch {
+                  parsedBody = { text: bodyStr };
+                }
+
+                const tgMsg = parsedBody.channel_post || parsedBody.message || parsedBody.edited_channel_post;
+                let text = "";
+                let channel = urlObj.searchParams.get("channel") || "";
+                let postId = urlObj.searchParams.get("postId") || "";
+
+                if (tgMsg) {
+                  text = tgMsg.text || tgMsg.caption || "";
+                  channel = channel || tgMsg.chat?.username || tgMsg.chat?.title || "";
+                  postId = postId || (tgMsg.message_id ? String(tgMsg.message_id) : "");
+                } else {
+                  text = parsedBody.text || parsedBody.message || parsedBody.content || parsedBody.caption || "";
+                  channel = channel || parsedBody.channel || parsedBody.peer || "";
+                  postId = postId || (parsedBody.message_id ? String(parsedBody.message_id) : "") || (parsedBody.id ? String(parsedBody.id) : "");
+                }
+
+                if (!text && urlObj.searchParams.get("text")) {
+                  text = urlObj.searchParams.get("text")!;
+                }
+
+                const mod = (await server.ssrLoadModule("/src/lib/scout/tg-monitor.server.ts")) as any;
+                const result = await mod.tgMonitorService.ingestRawMessage({
+                  text,
+                  channel,
+                  postId: postId ? `${channel || "webhook"}/${postId}` : undefined,
+                });
+
+                res.statusCode = 200;
+                res.setHeader("content-type", "application/json; charset=utf-8");
+                res.end(JSON.stringify({ ok: result.success, message: result.message, parsed: result.parsed, evaluation: result.evaluation }));
+              } catch (postErr: any) {
+                res.statusCode = 500;
+                res.setHeader("content-type", "application/json; charset=utf-8");
+                res.end(JSON.stringify({ ok: false, error: postErr.message }));
+              }
+            });
+            return;
+          }
+
+          next();
+        } catch (err: any) {
+          next();
+        }
+      });
+    },
+  };
+}
+
 // `0.0.0.0:8080` is the live-preview contract — don't change host/port.
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
@@ -161,6 +258,7 @@ export default defineConfig(({ command, isPreview }) => ({
     pgliteBootstrapPlugin(),
     // Before tanstackStart so /auth/popup never falls through to the SPA.
     authPopupPlugin(),
+    tgWebhookDevPlugin(),
     // Dev-only /__app-env, read by scripts/check-auth-invariant.mjs.
     appEnvPlugin(),
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.

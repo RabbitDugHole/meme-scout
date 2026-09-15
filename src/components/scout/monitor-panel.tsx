@@ -720,6 +720,24 @@ export function MonitorPanel({
                 添加监控频道
               </Button>
             </div>
+
+            {/* External Webhook Receiver Info Box */}
+            <div className="mt-4 rounded-lg bg-cyan-950/20 border border-cyan-500/30 p-3.5 text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-mono font-semibold text-cyan-400">
+                  <span>⚡ 外部 Webhook 推送接口已就绪 (支持 litehook / Telethon / TG Bot)</span>
+                </div>
+                <code className="rounded bg-background/80 px-2 py-0.5 font-mono text-[11px] text-cyan-300">
+                  POST /api/tg-webhook
+                </code>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed">
+                针对需要加入才能查看消息的私密或受限频道（如 <span className="text-foreground font-semibold">bobo9527</span> / <span className="text-foreground font-semibold">bobo8567</span>），可搭配开源 <span className="text-cyan-400 font-medium">litehook</span> 或 Python Telethon 用户号脚本，捕获消息后直接 POST 推送到本系统进行自动化评分、飞书报警与跟单：
+              </p>
+              <div className="mt-2 rounded bg-background/80 p-2 font-mono text-[11px] text-muted-foreground break-all">
+                curl -X POST /api/tg-webhook -H &quot;Content-Type: application/json&quot; -d &#39;&#123;&quot;channel&quot;:&quot;bobo9527&quot;, &quot;text&quot;:&quot;• 代币: GDPair (GDP)\n• CA: 0x7d2c...&quot;&#125;&#39;
+              </div>
+            </div>
           </div>
 
           {/* TG Secondary Screening Filter Settings */}

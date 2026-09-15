@@ -390,6 +390,196 @@ export class TelegramChannelMonitor {
   }
 
   /**
+   * Ingest a raw message pushed from external webhooks (e.g. litehook, Telethon, TG Bot webhook, curl).
+   */
+  public async ingestRawMessage(input: {
+    text: string;
+    channel?: string;
+    postId?: string;
+    timestamp?: string;
+  }): Promise<{
+    success: boolean;
+    message: string;
+    parsed?: TgMessageParsed;
+    evaluation?: TgTokenEvaluation;
+  }> {
+    const channel = input.channel ? cleanChannelUsername(input.channel) : "tg_webhook";
+    const post = parseTelegramPostText(input.text, channel, input.postId, input.timestamp);
+
+    if (!post) {
+      return {
+        success: false,
+        message: "未在消息文本中检测到有效的代币合约地址 (EVM 0x 或 Solana CA)",
+      };
+    }
+
+    if (this.processedPostIds.has(post.postId)) {
+      return {
+        success: true,
+        message: `消息 [${post.postId}] 此前已处理过，跳过重复处理`,
+        parsed: post,
+      };
+    }
+
+    this.processedPostIds.add(post.postId);
+    if (this.processedPostIds.size > 2000) {
+      const arr = Array.from(this.processedPostIds);
+      this.processedPostIds = new Set(arr.slice(arr.length - 1500));
+    }
+
+    console.log(`[TgWebhook] 📥 成功接收外部推送: [${channel}] $${post.symbol} (${post.address})`);
+
+    const evalResult = await this.evaluateTgToken(post);
+    this.recentEvaluations.unshift(evalResult);
+    if (this.recentEvaluations.length > 50) {
+      this.recentEvaluations = this.recentEvaluations.slice(0, 50);
+    }
+
+    if (!evalResult.passedFilter) {
+      return {
+        success: true,
+        message: `代币未通过过滤条件: ${evalResult.filterReason} (综合评分: ${evalResult.totalScore})`,
+        parsed: post,
+        evaluation: evalResult,
+      };
+    }
+
+    // Cooldown check
+    const addrKey = post.address.toLowerCase();
+    const prevAlert = this.alertedTokens.get(addrKey);
+    const now = Date.now();
+
+    if (prevAlert) {
+      const elapsedMin = (now - new Date(prevAlert.alertedAt).getTime()) / 60000;
+      const scoreDelta = evalResult.totalScore - prevAlert.score;
+      if (elapsedMin < this.config.cooldownMinutes && scoreDelta < 15) {
+        return {
+          success: true,
+          message: `代币仍在告警冷却期中 (${elapsedMin.toFixed(0)}m < ${this.config.cooldownMinutes}m)`,
+          parsed: post,
+          evaluation: evalResult,
+        };
+      }
+    }
+
+    // Send Lark Alarm
+    let larkOk = false;
+    let larkMsg = "";
+    if (this.config.autoAlarmEnabled) {
+      const sendRes = await sendLarkTgAlarm(evalResult, this.config.webhookUrl);
+      larkOk = sendRes.ok;
+      larkMsg = sendRes.msg || sendRes.error || (larkOk ? "Success" : "Failed");
+      if (larkOk) {
+        console.log(`[TgWebhook] ✅ 飞书报警推送成功: TG代币 $${post.symbol} (${post.chain}) - 得分: ${evalResult.totalScore}`);
+      } else {
+        console.warn(`[TgWebhook] ⚠️ 飞书推送告警失败: ${larkMsg}`);
+      }
+    } else {
+      larkOk = true;
+      larkMsg = "Simulated (Auto-alarm disabled)";
+    }
+
+    const alarmRecord: TgAlarmRecord = {
+      id: `${addrKey}-${now}`,
+      postId: post.postId,
+      channel: post.channel,
+      channelUrl: post.url,
+      tokenAddress: post.address,
+      symbol: post.symbol,
+      chain: post.chain,
+      score: evalResult.totalScore,
+      tier: evalResult.potentialTier,
+      timestamp: new Date().toISOString(),
+      larkOk,
+      larkMsg,
+      priceUsd: evalResult.liveData?.priceUsd,
+      mcapUsd: evalResult.liveData?.mcapUsd,
+      liquidityUsd: evalResult.liveData?.liquidityUsd,
+      volumeH1: evalResult.liveData?.volumeH1,
+      priceChangeH1: evalResult.liveData?.priceChangeH1,
+      smartMoneyCount: post.smartMoneyCount,
+      kolCount: post.kolCount,
+      signals: evalResult.signals,
+      risks: evalResult.risks,
+      dexUrl: evalResult.liveData?.dexUrl,
+      tweetUrl: post.tweetUrl,
+    };
+
+    this.alertedTokens.set(addrKey, {
+      symbol: post.symbol,
+      score: evalResult.totalScore,
+      alertedAt: alarmRecord.timestamp,
+    });
+
+    this.alarmHistory.unshift(alarmRecord);
+    if (this.alarmHistory.length > 50) {
+      this.alarmHistory = this.alarmHistory.slice(0, 50);
+    }
+
+    // Record for win-rate backtesting
+    backtestEngine.recordAlert({
+      tokenAddress: post.address,
+      symbol: post.symbol,
+      name: post.name,
+      chain: post.chain,
+      source: "telegram-channel",
+      channel: post.channel,
+      score: evalResult.totalScore,
+      tier: evalResult.potentialTier,
+      priceUsd: evalResult.liveData?.priceUsd ?? null,
+      mcapUsd: evalResult.liveData?.mcapUsd ?? null,
+      liquidityUsd: evalResult.liveData?.liquidityUsd ?? null,
+    });
+
+    // Trigger Automated Trading Module
+    tradeService.handleTokenAlert({
+      tokenAddress: post.address,
+      symbol: post.symbol,
+      name: post.name,
+      chain: post.chain,
+      source: `tg-webhook-${post.channel}`,
+      score: evalResult.totalScore,
+      priceUsd: evalResult.liveData?.priceUsd ?? null,
+      timestamp: alarmRecord.timestamp,
+    }).catch((err) => {
+      console.warn("[TgWebhook] 自动买入执行异常:", err?.message || err);
+    });
+
+    // Trigger Automated LP Market Maker Engine
+    const isRobinhood =
+      post.chain.toLowerCase().includes("robinhood") ||
+      post.channel.toLowerCase() === "bobo8567" ||
+      evalResult.token.chain.toLowerCase().includes("robinhood") ||
+      Boolean(evalResult.liveData?.dexUrl?.includes("/robinhood/")) ||
+      Boolean(post.platform && (post.platform.includes("Pons") || post.platform.includes("Barker")));
+
+    if (isRobinhood) {
+      lpService.handleTokenAlert({
+        tokenAddress: post.address,
+        symbol: post.symbol,
+        name: post.name,
+        chain: "Robinhood Chain",
+        score: evalResult.totalScore,
+        priceUsd: evalResult.liveData?.priceUsd ?? null,
+        liquidityUsd: evalResult.liveData?.liquidityUsd ?? null,
+        pairAddress: evalResult.liveData?.pairAddress,
+        volume5m:
+          post.volume5mUsd ||
+          (evalResult.liveData?.volumeH1 ? evalResult.liveData.volumeH1 / 12 : undefined),
+      }).catch((err) => {
+        console.warn("[TgWebhook] 自动 LP 做市建仓异常:", err?.message || err);
+      });
+    }
+
+    return {
+      success: true,
+      message: `Webhook 接收成功并触发全套筛选与下游引擎 (评分: ${evalResult.totalScore}, 评级: ${evalResult.potentialTier}, Lark: ${larkOk ? "已推送" : "未推送"})`,
+      parsed: post,
+      evaluation: evalResult,
+    };
+  }
+
+  /**
    * Evaluate a token from Telegram using DexScreener live DEX data and multi-dimensional scoring.
    */
   public async evaluateTgToken(token: TgMessageParsed): Promise<TgTokenEvaluation> {
@@ -707,6 +897,195 @@ export function cleanChannelUsername(input: string): string {
 }
 
 /**
+/**
+ * Parse structured token metadata from raw Telegram post text or HTML.
+ */
+export function parseTelegramPostText(
+  input: string,
+  channelUsername: string = "tg_webhook",
+  postId?: string,
+  timestamp?: string,
+): TgMessageParsed | null {
+  if (!input || typeof input !== "string") return null;
+
+  // Clean html formatting to text
+  let cleanText = input.replace(/<br\s*\/?>/gi, "\n");
+  cleanText = cleanText.replace(/<[^>]+>/g, "");
+  cleanText = decodeHtmlEntities(cleanText).trim();
+
+  // 1. Contract Address (EVM or Solana)
+  const evmMatch = cleanText.match(/0x[a-fA-F0-9]{40}/);
+  let address = evmMatch ? evmMatch[0] : "";
+  if (!address) {
+    // Check for Solana base58 (32 - 44 chars)
+    const solMatch = cleanText.match(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/);
+    if (solMatch) address = solMatch[1];
+  }
+  if (!address) return null; // If no contract address found, return null
+
+  // 2. Token Symbol & Name
+  let symbol = "";
+  let name: string | undefined = undefined;
+
+  // Pattern A: "• 代币: GDPair (GDP)" or "代币: Name (SYMBOL)"
+  const tokenLineMatch = cleanText.match(/代币[\s:：]*([^\n(]+?)(?:\s*\(([$A-Za-z0-9_]+)\))?(?:\n|$)/);
+  if (tokenLineMatch) {
+    const rawName = tokenLineMatch[1].trim();
+    const rawSym = tokenLineMatch[2] ? tokenLineMatch[2].replace(/^\$/, "").trim() : "";
+    if (rawSym) {
+      symbol = rawSym;
+      name = rawName;
+    } else if (rawName) {
+      symbol = rawName;
+      name = rawName;
+    }
+  }
+
+  // Pattern B: "$SYMBOL (Name)" (must start with letter to avoid matching numbers like $18.08K)
+  if (!symbol || symbol === "MEME") {
+    const dollarSymbolMatch = cleanText.match(/\$([A-Za-z][A-Za-z0-9_]{1,14})(?:\s*\(([^)]+)\))?/);
+    if (dollarSymbolMatch) {
+      symbol = dollarSymbolMatch[1];
+      if (dollarSymbolMatch[2] && !name) {
+        name = dollarSymbolMatch[2].trim();
+      }
+    }
+  }
+
+  // Pattern C: Parentheses symbol e.g. "(GDP)"
+  if (!symbol) {
+    const parenMatch = cleanText.match(/\(([A-Za-z0-9_]{2,10})\)/);
+    if (parenMatch) {
+      symbol = parenMatch[1];
+    }
+  }
+
+  if (!symbol) {
+    symbol = "MEME";
+  }
+
+  // 3. Platform & Chain
+  const platformMatch = cleanText.match(/平台[\s:：]*([^\n]+)/);
+  const platform = platformMatch ? platformMatch[1].replace(/[🚀🔥\s]/g, "").trim() : undefined;
+
+  const chainMatch = cleanText.match(/链[\s:：]*([^\n]+)/);
+  let chain = chainMatch ? chainMatch[1].trim() : "";
+
+  if (!chain) {
+    if (platform && (platform.toLowerCase().includes("pons") || platform.toLowerCase().includes("barker"))) {
+      chain = "Robinhood Chain";
+    } else if (channelUsername.toLowerCase().includes("bobo8567")) {
+      chain = "Robinhood Chain";
+    } else if (channelUsername.toLowerCase().includes("bobo9527")) {
+      chain = "BSC";
+    } else if (address.startsWith("0x")) {
+      chain = "Robinhood Chain";
+    } else {
+      chain = "Solana";
+    }
+  }
+
+  // 4. 5m Volume
+  let volume5mUsd: number | undefined = undefined;
+  const vol5mMatch = cleanText.match(/5\s*分钟交易量[\s:：]*\$?([0-9.,]+)\s*([KkMmBb])?/i);
+  if (vol5mMatch) {
+    const num = parseFloat(vol5mMatch[1].replace(/,/g, ""));
+    const unit = (vol5mMatch[2] || "").toUpperCase();
+    if (!isNaN(num)) {
+      if (unit === "K") volume5mUsd = num * 1_000;
+      else if (unit === "M") volume5mUsd = num * 1_000_000;
+      else if (unit === "B") volume5mUsd = num * 1_000_000_000;
+      else volume5mUsd = num;
+    }
+  }
+
+  // 5. MC
+  const mcapMatch = cleanText.match(/(?:起推)?市值[\s:：]*([^\n]+)/);
+  const tgMcap = mcapMatch ? mcapMatch[1].trim() : undefined;
+
+  // 6. Inflow
+  const inflowMatch = cleanText.match(/净流入[\s:：]*([^\n]+)/);
+  const tgInflow = inflowMatch ? inflowMatch[1].trim() : undefined;
+
+  // 7. Top 10 Holders Pct
+  let top10Pct: number | undefined = undefined;
+  const top10Match = cleanText.match(/Top\s*10\s*持仓占比[\s:：]*([0-9.,]+)%/i);
+  if (top10Match) {
+    const val = parseFloat(top10Match[1]);
+    if (!isNaN(val)) top10Pct = val;
+  }
+
+  // 8. Holders
+  const holdersMatch = cleanText.match(/持有者[\s:：]*(\d+)/);
+  const tgHolders = holdersMatch ? Number(holdersMatch[1]) : undefined;
+
+  // 9. Duration
+  const durationMatch = cleanText.match(/(?:创建|开盘|战壕存活)时长?[\s:：]*([^\n]+)/);
+  const tgDuration = durationMatch ? durationMatch[1].trim() : undefined;
+
+  // 10. Smart money count
+  const smartMatch = cleanText.match(/(\d+)\s*个聪明钱/);
+  const smartMoneyCount = smartMatch ? Number(smartMatch[1]) : undefined;
+
+  // 11. KOL count
+  const kolMatch = cleanText.match(/(\d+)\s*个\s*KOL/i);
+  const kolCount = kolMatch ? Number(kolMatch[1]) : undefined;
+
+  // 12. FOMO count
+  const fomoMatch = cleanText.match(/(\d+)\s*个\s*fomo/i);
+  const fomoCount = fomoMatch ? Number(fomoMatch[1]) : undefined;
+
+  // 13. Safety, Honeypot & Tax
+  const safetyMatch = cleanText.match(/安全[\s:：]*([^\n]+)/);
+  const honeypotMatch = cleanText.match(/蜜罐风险[\s:：]*([^\n]+)/);
+  const taxMatch = cleanText.match(/税率[\s:：]*([^\n]+)/);
+  const devMatch = cleanText.match(/开发者持仓[\s:：]*([^\n]+)/);
+
+  let tgSafety = safetyMatch ? safetyMatch[1].trim() : undefined;
+  if (!tgSafety && (honeypotMatch || taxMatch || devMatch)) {
+    const parts: string[] = [];
+    if (honeypotMatch) parts.push(honeypotMatch[0].trim());
+    else if (taxMatch) parts.push(taxMatch[0].trim());
+    if (devMatch) parts.push(devMatch[0].trim());
+    tgSafety = parts.join(" | ");
+  }
+
+  // 14. Tweet narrative URL
+  const tweetMatch = input.match(
+    /(?:href=")?((?:https?:\/\/)?(?:www\.)?(?:x|twitter)\.com\/[a-zA-Z0-9_]+\/status\/[0-9]+)/,
+  );
+  const tweetUrl = tweetMatch ? tweetMatch[1] : undefined;
+
+  const actualPostId = postId || `${channelUsername}/${Date.now()}`;
+
+  return {
+    postId: actualPostId,
+    channel: channelUsername,
+    url: actualPostId.includes("/")
+      ? `https://t.me/${actualPostId}`
+      : `https://t.me/${channelUsername}/${actualPostId}`,
+    symbol,
+    name,
+    chain,
+    platform,
+    address,
+    tgMcap,
+    tgInflow,
+    tgHolders,
+    top10Pct,
+    volume5mUsd,
+    tgDuration,
+    smartMoneyCount,
+    kolCount,
+    fomoCount,
+    tgSafety,
+    tweetUrl,
+    timestamp: timestamp || new Date().toISOString(),
+    rawText: cleanText,
+  };
+}
+
+/**
  * Parse messages from Telegram Web preview HTML.
  */
 export function parseTelegramWebHtml(
@@ -728,175 +1107,10 @@ export function parseTelegramWebHtml(
     const postId = postIdMatch[1];
     const timestamp = timeMatch ? timeMatch[1] : new Date().toISOString();
 
-    // Clean html formatting to text
-    let cleanText = textMatch[1].replace(/<br\s*\/?>/gi, "\n");
-    cleanText = cleanText.replace(/<[^>]+>/g, "");
-    cleanText = decodeHtmlEntities(cleanText).trim();
-
-    // 1. Contract Address (EVM or Solana)
-    const evmMatch = cleanText.match(/0x[a-fA-F0-9]{40}/);
-    let address = evmMatch ? evmMatch[0] : "";
-    if (!address) {
-      // Check for Solana base58 (32 - 44 chars)
-      const solMatch = cleanText.match(/\b([1-9A-HJ-NP-Za-km-z]{32,44})\b/);
-      if (solMatch) address = solMatch[1];
+    const parsed = parseTelegramPostText(textMatch[1], channelUsername, postId, timestamp);
+    if (parsed) {
+      results.push(parsed);
     }
-    if (!address) continue; // If no contract address found, skip
-
-    // 2. Token Symbol & Name
-    let symbol = "";
-    let name: string | undefined = undefined;
-
-    // Pattern A: "• 代币: GDPair (GDP)" or "代币: Name (SYMBOL)"
-    const tokenLineMatch = cleanText.match(/代币[\s:：]*([^\n(]+?)(?:\s*\(([$A-Za-z0-9_]+)\))?(?:\n|$)/);
-    if (tokenLineMatch) {
-      const rawName = tokenLineMatch[1].trim();
-      const rawSym = tokenLineMatch[2] ? tokenLineMatch[2].replace(/^\$/, "").trim() : "";
-      if (rawSym) {
-        symbol = rawSym;
-        name = rawName;
-      } else if (rawName) {
-        symbol = rawName;
-        name = rawName;
-      }
-    }
-
-    // Pattern B: "$SYMBOL (Name)" (must start with letter to avoid matching numbers like $18.08K)
-    if (!symbol || symbol === "MEME") {
-      const dollarSymbolMatch = cleanText.match(/\$([A-Za-z][A-Za-z0-9_]{1,14})(?:\s*\(([^)]+)\))?/);
-      if (dollarSymbolMatch) {
-        symbol = dollarSymbolMatch[1];
-        if (dollarSymbolMatch[2] && !name) {
-          name = dollarSymbolMatch[2].trim();
-        }
-      }
-    }
-
-    // Pattern C: Parentheses symbol e.g. "(GDP)"
-    if (!symbol) {
-      const parenMatch = cleanText.match(/\(([A-Za-z0-9_]{2,10})\)/);
-      if (parenMatch) {
-        symbol = parenMatch[1];
-      }
-    }
-
-    if (!symbol) {
-      symbol = "MEME";
-    }
-
-    // 3. Platform & Chain
-    const platformMatch = cleanText.match(/平台[\s:：]*([^\n]+)/);
-    const platform = platformMatch ? platformMatch[1].replace(/[🚀🔥\s]/g, "").trim() : undefined;
-
-    const chainMatch = cleanText.match(/链[\s:：]*([^\n]+)/);
-    let chain = chainMatch ? chainMatch[1].trim() : "";
-
-    if (!chain) {
-      if (platform && (platform.toLowerCase().includes("pons") || platform.toLowerCase().includes("barker"))) {
-        chain = "Robinhood Chain";
-      } else if (channelUsername.toLowerCase().includes("bobo8567")) {
-        chain = "Robinhood Chain";
-      } else if (channelUsername.toLowerCase().includes("bobo9527")) {
-        chain = "BSC";
-      } else {
-        chain = "Unknown";
-      }
-    }
-
-    // 4. 5m Volume
-    let volume5mUsd: number | undefined = undefined;
-    const vol5mMatch = cleanText.match(/5\s*分钟交易量[\s:：]*\$?([0-9.,]+)\s*([KkMmBb])?/i);
-    if (vol5mMatch) {
-      const num = parseFloat(vol5mMatch[1].replace(/,/g, ""));
-      const unit = (vol5mMatch[2] || "").toUpperCase();
-      if (!isNaN(num)) {
-        if (unit === "K") volume5mUsd = num * 1_000;
-        else if (unit === "M") volume5mUsd = num * 1_000_000;
-        else if (unit === "B") volume5mUsd = num * 1_000_000_000;
-        else volume5mUsd = num;
-      }
-    }
-
-    // 5. MC
-    const mcapMatch = cleanText.match(/(?:起推)?市值[\s:：]*([^\n]+)/);
-    const tgMcap = mcapMatch ? mcapMatch[1].trim() : undefined;
-
-    // 6. Inflow
-    const inflowMatch = cleanText.match(/净流入[\s:：]*([^\n]+)/);
-    const tgInflow = inflowMatch ? inflowMatch[1].trim() : undefined;
-
-    // 7. Top 10 Holders Pct
-    let top10Pct: number | undefined = undefined;
-    const top10Match = cleanText.match(/Top\s*10\s*持仓占比[\s:：]*([0-9.,]+)%/i);
-    if (top10Match) {
-      const val = parseFloat(top10Match[1]);
-      if (!isNaN(val)) top10Pct = val;
-    }
-
-    // 8. Holders
-    const holdersMatch = cleanText.match(/持有者[\s:：]*(\d+)/);
-    const tgHolders = holdersMatch ? Number(holdersMatch[1]) : undefined;
-
-    // 9. Duration
-    const durationMatch = cleanText.match(/(?:创建|开盘|战壕存活)时长?[\s:：]*([^\n]+)/);
-    const tgDuration = durationMatch ? durationMatch[1].trim() : undefined;
-
-    // 10. Smart money count
-    const smartMatch = cleanText.match(/(\d+)\s*个聪明钱/);
-    const smartMoneyCount = smartMatch ? Number(smartMatch[1]) : undefined;
-
-    // 11. KOL count
-    const kolMatch = cleanText.match(/(\d+)\s*个\s*KOL/i);
-    const kolCount = kolMatch ? Number(kolMatch[1]) : undefined;
-
-    // 12. FOMO count
-    const fomoMatch = cleanText.match(/(\d+)\s*个\s*fomo/i);
-    const fomoCount = fomoMatch ? Number(fomoMatch[1]) : undefined;
-
-    // 13. Safety, Honeypot & Tax
-    const safetyMatch = cleanText.match(/安全[\s:：]*([^\n]+)/);
-    const honeypotMatch = cleanText.match(/蜜罐风险[\s:：]*([^\n]+)/);
-    const taxMatch = cleanText.match(/税率[\s:：]*([^\n]+)/);
-    const devMatch = cleanText.match(/开发者持仓[\s:：]*([^\n]+)/);
-
-    let tgSafety = safetyMatch ? safetyMatch[1].trim() : undefined;
-    if (!tgSafety && (honeypotMatch || taxMatch || devMatch)) {
-      const parts: string[] = [];
-      if (honeypotMatch) parts.push(honeypotMatch[0].trim());
-      else if (taxMatch) parts.push(taxMatch[0].trim());
-      if (devMatch) parts.push(devMatch[0].trim());
-      tgSafety = parts.join(" | ");
-    }
-
-    // 14. Tweet narrative URL
-    const tweetMatch = textMatch[1].match(
-      /href="((?:https?:\/\/)?(?:www\.)?(?:x|twitter)\.com\/[^"]+)"/,
-    );
-    const tweetUrl = tweetMatch ? tweetMatch[1] : undefined;
-
-    results.push({
-      postId,
-      channel: channelUsername,
-      url: `https://t.me/${postId}`,
-      symbol,
-      name,
-      chain,
-      platform,
-      address,
-      tgMcap,
-      tgInflow,
-      tgHolders,
-      top10Pct,
-      volume5mUsd,
-      tgDuration,
-      smartMoneyCount,
-      kolCount,
-      fomoCount,
-      tgSafety,
-      tweetUrl,
-      timestamp,
-      rawText: cleanText,
-    });
   }
 
   return results;
