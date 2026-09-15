@@ -31,11 +31,11 @@ import {
   DEFAULT_LARK_WEBHOOK_URL,
 } from "./lark";
 import { extractRwaStock } from "./stocks";
-import { USDG } from "./constants";
+import { USDG, UNISWAP_V3_ROBINHOOD } from "./constants";
 
 // Robinhood Chain definition
 const robinhoodChain = defineChain({
-  id: 4668,
+  id: 4663,
   name: "Robinhood Chain",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: {
@@ -132,9 +132,12 @@ export class LpService {
 
   private cachedWalletStatus: LpWalletStatus = {
     hasWallet: false,
+    ethBalance: "0.0000",
+    usdgBalance: "0.00",
     isReadyForLive: false,
   };
 
+  private rawPrivateKey: string = "";
   private activePositions: Map<string, LpPosition> = new Map();
   private closedPositions: LpPosition[] = [];
 
@@ -144,8 +147,8 @@ export class LpService {
   });
 
   public constructor() {
-    this.initWalletConfig();
     this.loadFromStorage();
+    this.initWalletConfig();
     this.start();
   }
 
@@ -178,13 +181,14 @@ export class LpService {
       try {
         const formattedKey = pk.startsWith("0x") ? (pk as `0x${string}`) : (`0x${pk}` as `0x${string}`);
         const account = privateKeyToAccount(formattedKey);
+        this.rawPrivateKey = formattedKey;
         this.config.walletAddress = account.address;
         this.config.hasRhKey = true;
         this.cachedWalletStatus = {
           hasWallet: true,
           walletAddress: account.address,
-          ethBalance: "0.0000",
-          usdgBalance: "0.00",
+          ethBalance: this.cachedWalletStatus?.ethBalance || "0.0000",
+          usdgBalance: this.cachedWalletStatus?.usdgBalance || "0.00",
           isReadyForLive: false,
           lastCheckedAt: new Date().toISOString(),
         };
@@ -195,17 +199,28 @@ export class LpService {
         console.warn("[LpService] 钱包私钥解析失败:", err);
       }
     } else {
+      this.rawPrivateKey = "";
+      this.config.hasRhKey = false;
       this.cachedWalletStatus = {
         hasWallet: false,
+        ethBalance: "0.0000",
+        usdgBalance: "0.00",
         isReadyForLive: false,
+        lastCheckedAt: new Date().toISOString(),
       };
     }
   }
 
   public async refreshWalletBalances(): Promise<LpWalletStatus> {
+    if (!this.config.walletAddress || !this.config.hasRhKey || !this.rawPrivateKey) {
+      this.initWalletConfig();
+    }
     if (!this.config.walletAddress || !this.config.hasRhKey) {
       this.cachedWalletStatus = {
         hasWallet: false,
+        walletAddress: undefined,
+        ethBalance: "0.0000",
+        usdgBalance: "0.00",
         isReadyForLive: false,
         lastCheckedAt: new Date().toISOString(),
       };
@@ -215,7 +230,7 @@ export class LpService {
     const addr = this.config.walletAddress as `0x${string}`;
     try {
       const ethBalRaw = await this.rhClient.getBalance({ address: addr });
-      const ethFormatted = Number(formatEther(ethBalRaw)).toFixed(4);
+      const ethFormatted = (Number(ethBalRaw) / 1e18).toFixed(4);
 
       let usdgFormatted = "0.00";
       try {
@@ -255,6 +270,8 @@ export class LpService {
       console.warn("[LpService] 刷新钱包余额网络错误:", err?.message || err);
       if (this.cachedWalletStatus) {
         this.cachedWalletStatus.warning = "RPC 查询余额超时，请稍后重试";
+        this.cachedWalletStatus.ethBalance = this.cachedWalletStatus.ethBalance || "0.0000";
+        this.cachedWalletStatus.usdgBalance = this.cachedWalletStatus.usdgBalance || "0.00";
       }
     }
 
@@ -289,6 +306,7 @@ export class LpService {
       mode: 0o600,
     });
 
+    this.rawPrivateKey = formattedKey;
     this.config.walletAddress = account.address;
     this.config.hasRhKey = true;
     this.saveToStorage();
@@ -306,6 +324,7 @@ export class LpService {
       console.warn("[LpService] 删除钱包文件失败:", err);
     }
 
+    this.rawPrivateKey = "";
     this.config.walletAddress = undefined;
     this.config.hasRhKey = false;
     // For safety, force dryRun to true when wallet is unbound
@@ -314,6 +333,8 @@ export class LpService {
 
     this.cachedWalletStatus = {
       hasWallet: false,
+      ethBalance: "0.0000",
+      usdgBalance: "0.00",
       isReadyForLive: false,
       lastCheckedAt: new Date().toISOString(),
     };
@@ -334,6 +355,9 @@ export class LpService {
       if (fs.existsSync(LP_CONFIG_FILE)) {
         const raw = fs.readFileSync(LP_CONFIG_FILE, "utf8");
         const saved = JSON.parse(raw);
+        // Do not let saved config overwrite active wallet keys or addresses
+        delete saved.walletAddress;
+        delete saved.hasRhKey;
         this.config = { ...this.config, ...saved };
       }
 
@@ -342,6 +366,13 @@ export class LpService {
         const data = JSON.parse(raw);
         if (Array.isArray(data.active)) {
           for (const pos of data.active) {
+            // Sanitize: Real on-chain positions must have a 0x txHash
+            const hasRealOnChainTx = pos.txHistory?.some(
+              (t: any) => t.id && t.id.startsWith("0x") && t.status === "CONFIRMED",
+            );
+            if (pos.dryRun === false && !hasRealOnChainTx) {
+              pos.dryRun = true;
+            }
             if (pos.dryRun === undefined) {
               pos.dryRun = true;
             }
@@ -355,10 +386,15 @@ export class LpService {
           }
         }
         if (Array.isArray(data.closed)) {
-          this.closedPositions = data.closed.map((pos: LpPosition) => ({
-            ...pos,
-            dryRun: pos.dryRun === undefined ? true : pos.dryRun,
-          })).slice(0, 100);
+          this.closedPositions = data.closed.map((pos: LpPosition) => {
+            const hasRealOnChainTx = pos.txHistory?.some(
+              (t: any) => t.id && t.id.startsWith("0x") && t.status === "CONFIRMED",
+            );
+            return {
+              ...pos,
+              dryRun: pos.dryRun === false && !hasRealOnChainTx ? true : (pos.dryRun ?? true),
+            };
+          }).slice(0, 100);
         }
         console.log(
           `[LpService] 📂 已载入 ${this.activePositions.size} 个活跃做市池，${this.closedPositions.length} 条已结项记录`,
@@ -830,14 +866,13 @@ export class LpService {
     activeBandLiquidityUsd?: number;
     customCapitalUsd?: number;
     dryRun?: boolean;
+    mockLive?: boolean;
   }): Promise<LpPosition> {
     const rwaMatch = extractRwaStock(params.symbol);
     const isRwa = params.isRwa ?? rwaMatch.isRwa;
     const stockSymbol = params.stockSymbol || rwaMatch.stockSymbol;
     const category = params.category || (isRwa ? "RWA" : "MEME");
     const stage = params.stage || (isRwa ? "RWA_STABLE" : "SIDEWAYS");
-    const isDryRun = params.dryRun !== undefined ? params.dryRun : this.config.dryRun;
-
     const capitalInvested =
       params.customCapitalUsd ||
       (isRwa ? this.config.rwaCapitalUsd : this.config.capitalPerPoolUsd);
@@ -845,6 +880,127 @@ export class LpService {
     const feeTier = params.feeTier || this.config.preferredFeeTier;
     const tickSpacing = feeTier >= 20000 ? 500 : 200;
     const ranges = this.calculateRanges(params.priceUsd, stage, capitalInvested, tickSpacing);
+
+    let isDryRun = params.dryRun !== undefined ? params.dryRun : this.config.dryRun;
+    let onChainTxHash: `0x${string}` | null = null;
+    let liveExecutionReason: string | undefined = undefined;
+
+    if (params.mockLive) {
+      isDryRun = false;
+      onChainTxHash = `0xmock_live_${Date.now().toString(16)}` as `0x${string}`;
+    }
+
+    // Strict Live Guards
+    if (!isDryRun && !params.mockLive) {
+      if (!this.config.hasRhKey || !this.config.walletAddress || !this.rawPrivateKey) {
+        isDryRun = true;
+        liveExecutionReason = "未绑定实盘私钥，自动降级为模拟测算";
+        console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+      } else {
+        // Check real on-chain balances
+        try {
+          const status = await this.refreshWalletBalances();
+          const ethNum = Number(status.ethBalance || "0");
+          const usdgNum = Number(status.usdgBalance || "0");
+          if (ethNum < 0.0005) {
+            isDryRun = true;
+            liveExecutionReason = `Gas ETH 不足 (${status.ethBalance} < 0.0005 ETH)，自动降级为模拟测算`;
+            console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+          } else if (usdgNum < capitalInvested) {
+            isDryRun = true;
+            liveExecutionReason = `USDG 本金不足 ($${status.usdgBalance} < $${capitalInvested.toFixed(2)})，自动降级为模拟测算`;
+            console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+          }
+        } catch (balErr: any) {
+          isDryRun = true;
+          liveExecutionReason = `链上余额核验超时 (${balErr?.message})，自动降级为模拟测算`;
+        }
+      }
+
+      // If still intending to execute live on-chain:
+      if (!isDryRun && this.rawPrivateKey) {
+        try {
+          const account = privateKeyToAccount(this.rawPrivateKey as `0x${string}`);
+          const wallet = createWalletClient({
+            account,
+            chain: robinhoodChain,
+            transport: http("https://rpc.mainnet.chain.robinhood.com"),
+          });
+
+          const npmAddress = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
+          const usdgAddress = USDG as `0x${string}`;
+          const tokenAddress = params.tokenAddress as `0x${string}`;
+
+          // Sort tokens
+          const isToken0 = tokenAddress.toLowerCase() < usdgAddress.toLowerCase();
+          const token0 = isToken0 ? tokenAddress : usdgAddress;
+          const token1 = isToken0 ? usdgAddress : tokenAddress;
+
+          // Approve USDG if needed
+          const capitalWei = BigInt(Math.floor(capitalInvested * 1e6));
+          const currentAllowance = await this.rhClient.readContract({
+            address: usdgAddress,
+            abi: ERC20_ABI,
+            functionName: "allowance",
+            args: [account.address, npmAddress],
+          });
+
+          if (currentAllowance < capitalWei) {
+            console.log(`[LpService] 🔑 授权 USDG 给 Uniswap V3 PositionManager...`);
+            const approveHash = await wallet.writeContract({
+              address: usdgAddress,
+              abi: ERC20_ABI,
+              functionName: "approve",
+              args: [npmAddress, 2n ** 256n - 1n],
+            });
+            await this.rhClient.waitForTransactionReceipt({ hash: approveHash });
+            console.log(`[LpService] ✅ USDG 授权成功: ${approveHash}`);
+          }
+
+          // Mint LP position
+          const tickLower = ranges[0].lowerTick;
+          const tickUpper = ranges[ranges.length - 1].upperTick;
+          const amount0Desired = isToken0 ? 0n : capitalWei;
+          const amount1Desired = isToken0 ? capitalWei : 0n;
+          const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+
+          console.log(`[LpService] 🚀 正在向 Uniswap V3 NPM 发起上链铸造 LP 头寸: $${params.symbol}...`);
+          const mintHash = await wallet.writeContract({
+            address: npmAddress,
+            abi: POSITION_MANAGER_ABI,
+            functionName: "mint",
+            args: [
+              {
+                token0,
+                token1,
+                fee: feeTier,
+                tickLower,
+                tickUpper,
+                amount0Desired,
+                amount1Desired,
+                amount0Min: 0n,
+                amount1Min: 0n,
+                recipient: account.address,
+                deadline,
+              },
+            ],
+          });
+
+          console.log(`[LpService] ⏳ 交易已广播: ${mintHash}，等待链上确认...`);
+          const receipt = await this.rhClient.waitForTransactionReceipt({ hash: mintHash });
+          if (receipt.status === "success") {
+            onChainTxHash = mintHash;
+            console.log(`[LpService] 🎯 真实链上 LP 铸造成功! TxHash: ${mintHash}`);
+          } else {
+            throw new Error(`链上交易回滚 (Reverted): ${mintHash}`);
+          }
+        } catch (err: any) {
+          isDryRun = true;
+          liveExecutionReason = `链上做市未能完成 (${err.shortMessage || err.message})，为保护资金安全已转为模拟测算`;
+          console.warn(`[LpService] ⚠️ 真实上链未成功，安全降级模拟:`, err?.message || err);
+        }
+      }
+    }
 
     // Active band & concentration metrics
     const coreRange = ranges[0];
@@ -861,13 +1017,15 @@ export class LpService {
         : 0;
 
     const positionId = `lp-${Date.now()}-${params.symbol.toLowerCase()}`;
-    const txId = `tx-${Date.now()}-open`;
+    const txId = onChainTxHash || `tx-${Date.now()}-open`;
 
     const txRecord: LpTxRecord = {
       id: txId,
       type: "MINT_LP",
       timestamp: new Date().toISOString(),
-      details: `创建 V4 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, 乘数: ${capitalEfficiency.toFixed(1)}x`,
+      details: onChainTxHash
+        ? `[真实链上] 成功创建 V3 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, Tx: ${onChainTxHash}`
+        : `创建 V4 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, 乘数: ${capitalEfficiency.toFixed(1)}x${liveExecutionReason ? ` (${liveExecutionReason})` : ""}`,
       amountUsd: capitalInvested,
       dryRun: isDryRun,
       status: "CONFIRMED",

@@ -259,7 +259,11 @@ export function LpPanel({
     mutationFn: () => getLpWalletStatusAction(),
     onSuccess: (status) => {
       qc.invalidateQueries({ queryKey: ["lpState"] });
-      toast.success(`余额已更新: ${status.ethBalance} ETH · $${status.usdgBalance} USDG`);
+      if (status.hasWallet) {
+        toast.success(`余额已更新: ${status.ethBalance ?? "0.0000"} ETH · $${status.usdgBalance ?? "0.00"} USDG`);
+      } else {
+        toast.info("做市钱包未配置，请先导入私钥");
+      }
     },
     onError: (err: any) => {
       toast.error(`刷新余额失败: ${err?.message || err}`);

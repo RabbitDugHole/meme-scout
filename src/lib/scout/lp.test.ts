@@ -442,6 +442,7 @@ describe("Paper vs Live LP Data Isolation & Scoped Operations", () => {
       stage: "SIDEWAYS",
       customCapitalUsd: 100,
       dryRun: false,
+      mockLive: true,
     });
     assert.equal(livePos.dryRun, false);
 
