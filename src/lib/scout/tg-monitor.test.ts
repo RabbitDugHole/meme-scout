@@ -106,3 +106,45 @@ test("formatTgMemeAlarmText should strictly start with ** and contain bash CA bl
   assert.ok(text.includes("@lanniaohui"), "Must mention channel");
   assert.ok(text.includes("88/100"), "Must include score");
 });
+
+test("parseTelegramWebHtml should correctly parse bobo8567 Robinhood channel format", () => {
+  const sampleBoboHtml = `
+    <div class="tgme_widget_message_wrap js-widget_message_wrap" id="widget_message_6745">
+      <div class="tgme_widget_message text_not_supported_wrap js-widget_message" data-post="bobo8567/6745">
+        <div class="tgme_widget_message_text js-message_text" dir="auto">
+          🔥 【第 1 次推送】 🔥<br>
+          • 代币: GDPair (GDP)<br>
+          • 平台: 🚀 Pons<br>
+          • CA: 0x7d2c34f8be61ae93cce3d408007f73fb3a4e7cfb<br>
+          • 战壕存活: 1分钟前<br>
+          • 5分钟交易量: $18.08K<br>
+          ————————————————————<br>
+          💰 起推市值: $74.28K<br>
+          • 第 1 次首推<br>
+          ————————————————————<br>
+          👥 筹码透析:<br>
+          • Top 10 持仓占比: 34.8% (🟢 分散度健康)<br>
+          • 钓鱼钱包: 0.2%<br>
+          • 老鼠仓偷跑比例: 0%<br>
+          • 蜜罐风险: 🟢 正常 | 税率: 0%<br>
+          • 开发者持仓: 0%
+        </div>
+        <div class="tgme_widget_message_footer compact js-message_footer">
+          <time datetime="2026-09-15T03:00:00+00:00" class="time">03:00</time>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const results = parseTelegramWebHtml(sampleBoboHtml, "bobo8567");
+  assert.equal(results.length, 1);
+  const item = results[0];
+  assert.equal(item.postId, "bobo8567/6745");
+  assert.equal(item.symbol, "GDP");
+  assert.equal(item.name, "GDPair");
+  assert.equal(item.chain, "Robinhood Chain");
+  assert.equal(item.address, "0x7d2c34f8be61ae93cce3d408007f73fb3a4e7cfb");
+  assert.equal(item.volume5mUsd, 18080);
+  assert.equal(item.top10Pct, 34.8);
+  assert.ok(item.tgSafety?.includes("正常"), "tgSafety should detect honeypot normal");
+});

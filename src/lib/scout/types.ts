@@ -177,6 +177,9 @@ export type TgMessageParsed = {
   kolCount?: number;
   fomoCount?: number;
   tgSafety?: string;
+  volume5mUsd?: number;
+  top10Pct?: number;
+  platform?: string;
   narrative?: string;
   tweetUrl?: string;
   timestamp: string;

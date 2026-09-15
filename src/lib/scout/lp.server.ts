@@ -83,7 +83,7 @@ export class LpService {
     minVolumeToLiquidityRatio: 1.5,
     preferredFeeTier: 10000, // 1%
     maxTopHoldersPct: 35,
-    minScoreThreshold: 80,
+    minScoreThreshold: 75,
 
     pumpCoreSharePct: 40,
     pumpCoreUpPct: 30, // +30%
@@ -768,8 +768,22 @@ export class LpService {
     }
 
     const volToLiqRatio = volume5m / liquidity;
-    if (!rwaMatch.isRwa && volToLiqRatio < this.config.minVolumeToLiquidityRatio) {
-      // Does not meet high-frequency friction criteria
+    const dailyTurnoverRatio = (volume5m * 288) / liquidity;
+    // High-frequency friction criteria:
+    // 1) RWA stocks are always eligible due to high capital efficiency
+    // 2) Normalized 24h turnover >= minVolumeToLiquidityRatio (default: >= 1.5x pool per day)
+    // 3) OR 5-min pool turnover >= 2% (0.02)
+    // 4) OR 5-min volume >= $1,500
+    const meetsFriction =
+      rwaMatch.isRwa ||
+      dailyTurnoverRatio >= this.config.minVolumeToLiquidityRatio ||
+      volToLiqRatio >= 0.02 ||
+      volume5m >= 1500;
+
+    if (!meetsFriction) {
+      console.log(
+        `[LpService] 标的 $${params.symbol} 换手率未达到做市摩擦门槛 (5m量: $${volume5m.toFixed(0)}, 池深: $${liquidity.toFixed(0)}, 日化换手: ${dailyTurnoverRatio.toFixed(2)}x < ${this.config.minVolumeToLiquidityRatio}x)`,
+      );
       return null;
     }
 
@@ -778,7 +792,7 @@ export class LpService {
     let stage: LpStage = "SIDEWAYS";
     if (rwaMatch.isRwa) {
       stage = "RWA_STABLE";
-    } else if (priceChange5m > 10 || volToLiqRatio >= 2.0) {
+    } else if (priceChange5m > 8 || dailyTurnoverRatio >= 2.0 || volToLiqRatio >= 0.05) {
       stage = "PUMP";
     }
 

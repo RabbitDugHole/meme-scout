@@ -21,8 +21,18 @@ import type {
 
 export const DEFAULT_TG_CHANNELS: TgChannelConfig[] = [
   {
+    username: "bobo8567",
+    name: "Robinhood 监控频道🚀",
+    enabled: true,
+  },
+  {
     username: "lanniaohui",
     name: "Bluebird 监控频道🕊️",
+    enabled: true,
+  },
+  {
+    username: "bobo9527",
+    name: "BSC 监控频道⚡",
     enabled: true,
   },
 ];
@@ -40,7 +50,7 @@ export class TelegramChannelMonitor {
     channels: [...DEFAULT_TG_CHANNELS],
     enabled: true,
     pollIntervalSeconds: 30, // Poll every 30s
-    minScoreThreshold: 80, // Score >= 80 (S-Tier)
+    minScoreThreshold: 70, // Score >= 70 (Tier A & S Qualified)
     minLiquidityUsd: 20000, // Live DEX liq >= $20k
     cooldownMinutes: 120, // 2h cooldown per CA
     autoAlarmEnabled: true,
@@ -331,16 +341,26 @@ export class TelegramChannelMonitor {
           });
 
           // Trigger Automated LP Market Maker Engine (if on Robinhood Chain)
-          if (post.chain.toLowerCase().includes("robinhood")) {
+          const isRobinhood =
+            post.chain.toLowerCase().includes("robinhood") ||
+            post.channel.toLowerCase() === "bobo8567" ||
+            evalResult.token.chain.toLowerCase().includes("robinhood") ||
+            Boolean(evalResult.liveData?.dexUrl?.includes("/robinhood/")) ||
+            Boolean(post.platform && (post.platform.includes("Pons") || post.platform.includes("Barker")));
+
+          if (isRobinhood) {
             lpService.handleTokenAlert({
               tokenAddress: post.address,
               symbol: post.symbol,
               name: post.name,
-              chain: post.chain,
+              chain: "Robinhood Chain",
               score: evalResult.totalScore,
               priceUsd: evalResult.liveData?.priceUsd ?? null,
               liquidityUsd: evalResult.liveData?.liquidityUsd ?? null,
               pairAddress: evalResult.liveData?.pairAddress,
+              volume5m:
+                post.volume5mUsd ||
+                (evalResult.liveData?.volumeH1 ? evalResult.liveData.volumeH1 / 12 : undefined),
             }).catch((err) => {
               console.warn("[TgMonitor] 自动 LP 做市建仓异常:", err?.message || err);
             });
@@ -416,6 +436,16 @@ export class TelegramChannelMonitor {
             ),
             hasWebsite: Boolean(p.info?.websites?.length > 0),
           };
+
+          if (p.baseToken?.symbol && (!token.symbol || token.symbol === "MEME" || /^\d+$/.test(token.symbol))) {
+            token.symbol = p.baseToken.symbol;
+          }
+          if (p.baseToken?.name && !token.name) {
+            token.name = p.baseToken.name;
+          }
+          if (p.chainId === "robinhood") {
+            token.chain = "Robinhood Chain";
+          }
         }
       }
     } catch {
@@ -438,17 +468,25 @@ export class TelegramChannelMonitor {
       tgSafetyLower.includes("锁销") ||
       tgSafetyLower.includes("已放弃") ||
       tgSafetyLower.includes("s级");
+    const hasHoneypotSafe =
+      tgSafetyLower.includes("正常") ||
+      tgSafetyLower.includes("0%") ||
+      tgSafetyLower.includes("开源") ||
+      tgSafetyLower.includes("无风险");
 
     if (hasLockSignal) {
       safetyScore += 16;
       signals.push("TG 官方评级确认: LP 已锁销 / 权限已放弃");
+    } else if (hasHoneypotSafe) {
+      safetyScore += 15;
+      signals.push("TG 蜜罐安全检测通过 (0% 税率 / 蜜罐正常)");
     } else {
       safetyScore += 5;
     }
 
-    if (tgSafetyLower.includes("s级")) {
+    if (tgSafetyLower.includes("s级") || tgSafetyLower.includes("开发者: 0%") || tgSafetyLower.includes("开发者持仓: 0%")) {
       safetyScore += 5;
-      signals.push("安全矩阵等级 S 级");
+      signals.push("安全矩阵等级 S 级 / 开发者筹码已出清");
     } else if (tgSafetyLower.includes("a级")) {
       safetyScore += 3;
     }
@@ -466,11 +504,12 @@ export class TelegramChannelMonitor {
     if (liqUsd >= 50000) {
       liquidityScore += 15;
       signals.push(`实时池子充足 ($${Math.round(liqUsd).toLocaleString()})`);
-    } else if (liqUsd >= 30000) {
-      liquidityScore += 12;
+    } else if (liqUsd >= 20000) {
+      liquidityScore += 11;
       signals.push(`实时池子达标 ($${Math.round(liqUsd).toLocaleString()})`);
-    } else if (liqUsd >= 15000) {
+    } else if (liqUsd >= 10000) {
       liquidityScore += 7;
+      signals.push(`实时池子基础达标 ($${Math.round(liqUsd).toLocaleString()})`);
     } else if (liqUsd > 0) {
       risks.push(`流动性较浅 ($${Math.round(liqUsd).toLocaleString()})`);
       liquidityScore += 2;
@@ -489,13 +528,27 @@ export class TelegramChannelMonitor {
     // 3. Momentum & Trading Score (Max 25 pts)
     let momentumScore = 0;
 
-    // Smart money from TG
+    // Smart money / Volume surge from TG
     if (token.smartMoneyCount && token.smartMoneyCount >= 5) {
       momentumScore += 9;
       signals.push(`TG 检出 ${token.smartMoneyCount} 个聪明钱同时跟买`);
     } else if (token.smartMoneyCount && token.smartMoneyCount >= 2) {
       momentumScore += 5;
       signals.push(`TG 检出 ${token.smartMoneyCount} 个聪明钱介入`);
+    } else if (token.volume5mUsd && token.volume5mUsd >= 10000) {
+      momentumScore += 9;
+      signals.push(`TG 检出 5m 成交量剧烈爆发 ($${Math.round(token.volume5mUsd).toLocaleString()})`);
+    } else if (token.volume5mUsd && token.volume5mUsd >= 3000) {
+      momentumScore += 6;
+      signals.push(`TG 检出 5m 成交活跃 ($${Math.round(token.volume5mUsd).toLocaleString()})`);
+    }
+
+    // 1h Volume check
+    if (liveData?.volumeH1 && liveData.volumeH1 >= 100000) {
+      momentumScore += 4;
+      signals.push(`1h 交易量极其火爆 (>$100k)`);
+    } else if (liveData?.volumeH1 && liveData.volumeH1 >= 30000) {
+      momentumScore += 2;
     }
 
     if (token.kolCount && token.kolCount >= 3) {
@@ -536,6 +589,18 @@ export class TelegramChannelMonitor {
       distributionScore += 6;
     } else if (holders > 0) {
       distributionScore += 3;
+    } else if (token.top10Pct !== undefined) {
+      if (token.top10Pct <= 35) {
+        distributionScore += 10;
+        signals.push(`Top 10 筹码分散度优异 (${token.top10Pct}%)`);
+      } else if (token.top10Pct <= 50) {
+        distributionScore += 7;
+        signals.push(`Top 10 筹码分散度健康 (${token.top10Pct}%)`);
+      } else if (token.top10Pct <= 65) {
+        distributionScore += 4;
+      } else {
+        risks.push(`Top 10 筹码较集中 (${token.top10Pct}%)`);
+      }
     }
 
     if (token.fomoCount && token.fomoCount >= 10) {
@@ -678,47 +743,132 @@ export function parseTelegramWebHtml(
     }
     if (!address) continue; // If no contract address found, skip
 
-    // 2. Token Symbol
-    const symbolMatch = cleanText.match(/\$([A-Za-z0-9_]{2,15})/);
-    const symbol = symbolMatch ? symbolMatch[1] : "MEME";
+    // 2. Token Symbol & Name
+    let symbol = "";
+    let name: string | undefined = undefined;
 
-    // 3. Chain
+    // Pattern A: "• 代币: GDPair (GDP)" or "代币: Name (SYMBOL)"
+    const tokenLineMatch = cleanText.match(/代币[\s:：]*([^\n(]+?)(?:\s*\(([$A-Za-z0-9_]+)\))?(?:\n|$)/);
+    if (tokenLineMatch) {
+      const rawName = tokenLineMatch[1].trim();
+      const rawSym = tokenLineMatch[2] ? tokenLineMatch[2].replace(/^\$/, "").trim() : "";
+      if (rawSym) {
+        symbol = rawSym;
+        name = rawName;
+      } else if (rawName) {
+        symbol = rawName;
+        name = rawName;
+      }
+    }
+
+    // Pattern B: "$SYMBOL (Name)" (must start with letter to avoid matching numbers like $18.08K)
+    if (!symbol || symbol === "MEME") {
+      const dollarSymbolMatch = cleanText.match(/\$([A-Za-z][A-Za-z0-9_]{1,14})(?:\s*\(([^)]+)\))?/);
+      if (dollarSymbolMatch) {
+        symbol = dollarSymbolMatch[1];
+        if (dollarSymbolMatch[2] && !name) {
+          name = dollarSymbolMatch[2].trim();
+        }
+      }
+    }
+
+    // Pattern C: Parentheses symbol e.g. "(GDP)"
+    if (!symbol) {
+      const parenMatch = cleanText.match(/\(([A-Za-z0-9_]{2,10})\)/);
+      if (parenMatch) {
+        symbol = parenMatch[1];
+      }
+    }
+
+    if (!symbol) {
+      symbol = "MEME";
+    }
+
+    // 3. Platform & Chain
+    const platformMatch = cleanText.match(/平台[\s:：]*([^\n]+)/);
+    const platform = platformMatch ? platformMatch[1].replace(/[🚀🔥\s]/g, "").trim() : undefined;
+
     const chainMatch = cleanText.match(/链[\s:：]*([^\n]+)/);
-    const chain = chainMatch ? chainMatch[1].trim() : "Unknown";
+    let chain = chainMatch ? chainMatch[1].trim() : "";
 
-    // 4. MC
-    const mcapMatch = cleanText.match(/市值[\s:：]*([^\n]+)/);
+    if (!chain) {
+      if (platform && (platform.toLowerCase().includes("pons") || platform.toLowerCase().includes("barker"))) {
+        chain = "Robinhood Chain";
+      } else if (channelUsername.toLowerCase().includes("bobo8567")) {
+        chain = "Robinhood Chain";
+      } else if (channelUsername.toLowerCase().includes("bobo9527")) {
+        chain = "BSC";
+      } else {
+        chain = "Unknown";
+      }
+    }
+
+    // 4. 5m Volume
+    let volume5mUsd: number | undefined = undefined;
+    const vol5mMatch = cleanText.match(/5\s*分钟交易量[\s:：]*\$?([0-9.,]+)\s*([KkMmBb])?/i);
+    if (vol5mMatch) {
+      const num = parseFloat(vol5mMatch[1].replace(/,/g, ""));
+      const unit = (vol5mMatch[2] || "").toUpperCase();
+      if (!isNaN(num)) {
+        if (unit === "K") volume5mUsd = num * 1_000;
+        else if (unit === "M") volume5mUsd = num * 1_000_000;
+        else if (unit === "B") volume5mUsd = num * 1_000_000_000;
+        else volume5mUsd = num;
+      }
+    }
+
+    // 5. MC
+    const mcapMatch = cleanText.match(/(?:起推)?市值[\s:：]*([^\n]+)/);
     const tgMcap = mcapMatch ? mcapMatch[1].trim() : undefined;
 
-    // 5. Inflow
+    // 6. Inflow
     const inflowMatch = cleanText.match(/净流入[\s:：]*([^\n]+)/);
     const tgInflow = inflowMatch ? inflowMatch[1].trim() : undefined;
 
-    // 6. Holders
+    // 7. Top 10 Holders Pct
+    let top10Pct: number | undefined = undefined;
+    const top10Match = cleanText.match(/Top\s*10\s*持仓占比[\s:：]*([0-9.,]+)%/i);
+    if (top10Match) {
+      const val = parseFloat(top10Match[1]);
+      if (!isNaN(val)) top10Pct = val;
+    }
+
+    // 8. Holders
     const holdersMatch = cleanText.match(/持有者[\s:：]*(\d+)/);
     const tgHolders = holdersMatch ? Number(holdersMatch[1]) : undefined;
 
-    // 7. Duration
-    const durationMatch = cleanText.match(/(?:创建|开盘)时长[\s:：]*([^\n]+)/);
+    // 9. Duration
+    const durationMatch = cleanText.match(/(?:创建|开盘|战壕存活)时长?[\s:：]*([^\n]+)/);
     const tgDuration = durationMatch ? durationMatch[1].trim() : undefined;
 
-    // 8. Smart money count
+    // 10. Smart money count
     const smartMatch = cleanText.match(/(\d+)\s*个聪明钱/);
     const smartMoneyCount = smartMatch ? Number(smartMatch[1]) : undefined;
 
-    // 9. KOL count
+    // 11. KOL count
     const kolMatch = cleanText.match(/(\d+)\s*个\s*KOL/i);
     const kolCount = kolMatch ? Number(kolMatch[1]) : undefined;
 
-    // 10. FOMO count
+    // 12. FOMO count
     const fomoMatch = cleanText.match(/(\d+)\s*个\s*fomo/i);
     const fomoCount = fomoMatch ? Number(fomoMatch[1]) : undefined;
 
-    // 11. Safety
+    // 13. Safety, Honeypot & Tax
     const safetyMatch = cleanText.match(/安全[\s:：]*([^\n]+)/);
-    const tgSafety = safetyMatch ? safetyMatch[1].trim() : undefined;
+    const honeypotMatch = cleanText.match(/蜜罐风险[\s:：]*([^\n]+)/);
+    const taxMatch = cleanText.match(/税率[\s:：]*([^\n]+)/);
+    const devMatch = cleanText.match(/开发者持仓[\s:：]*([^\n]+)/);
 
-    // 12. Tweet narrative URL
+    let tgSafety = safetyMatch ? safetyMatch[1].trim() : undefined;
+    if (!tgSafety && (honeypotMatch || taxMatch || devMatch)) {
+      const parts: string[] = [];
+      if (honeypotMatch) parts.push(honeypotMatch[0].trim());
+      else if (taxMatch) parts.push(taxMatch[0].trim());
+      if (devMatch) parts.push(devMatch[0].trim());
+      tgSafety = parts.join(" | ");
+    }
+
+    // 14. Tweet narrative URL
     const tweetMatch = textMatch[1].match(
       /href="((?:https?:\/\/)?(?:www\.)?(?:x|twitter)\.com\/[^"]+)"/,
     );
@@ -729,11 +879,15 @@ export function parseTelegramWebHtml(
       channel: channelUsername,
       url: `https://t.me/${postId}`,
       symbol,
+      name,
       chain,
+      platform,
       address,
       tgMcap,
       tgInflow,
       tgHolders,
+      top10Pct,
+      volume5mUsd,
       tgDuration,
       smartMoneyCount,
       kolCount,

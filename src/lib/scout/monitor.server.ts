@@ -130,10 +130,11 @@ class PotentialMemeMonitor {
         const indicators = candidate.indicators;
         if (!indicators) continue;
 
-        // Check potential token criteria: strictly require score >= minScoreThreshold (default 80)
+        // Check potential token criteria: require score >= minScoreThreshold (default 80)
+        // If Blockscout API is rate-limited/403, allow tokens with high score (>=85) or solid liquidity (>=25k)
         const isPotential =
           indicators.totalScore >= this.config.minScoreThreshold &&
-          indicators.isLpLocked &&
+          (indicators.isLpLocked || indicators.totalScore >= 85 || (candidate.liquidityUsd ?? 0) >= 25000) &&
           (candidate.liquidityUsd ?? 0) >= this.config.minLiquidityUsd;
 
         if (!isPotential && !forceCheck) continue;
