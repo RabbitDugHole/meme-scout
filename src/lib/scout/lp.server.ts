@@ -49,6 +49,17 @@ const robinhoodChain = defineChain({
   },
 });
 
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+export const rpcTransport = http("https://rpc.mainnet.chain.robinhood.com", {
+  fetchOptions: {
+    headers: {
+      "User-Agent": BROWSER_UA,
+    },
+  },
+});
+
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const LP_CONFIG_FILE = path.resolve(DATA_DIR, "lp-config.json");
 const LP_POSITIONS_FILE = path.resolve(DATA_DIR, "lp-positions.json");
@@ -59,6 +70,7 @@ const POSITION_MANAGER_ABI = parseAbi([
   "function mint((address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function decreaseLiquidity((uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external payable returns (uint256 amount0, uint256 amount1)",
   "function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external payable returns (uint256 amount0, uint256 amount1)",
+  "function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
 ]);
 
 const ERC20_ABI = parseAbi([
@@ -73,6 +85,7 @@ export class LpService {
   private isRunning: boolean = false;
   private monitorTimer: NodeJS.Timeout | null = null;
   private isCheckingPositions: boolean = false;
+  private cachedHotTokens: import("./types").HotTokenItem[] = [];
 
   private config: LpConfig = {
     dryRun: true,
@@ -124,6 +137,10 @@ export class LpService {
     singleSidedUpperMaxPct: 45,
     fastStopLossPct: -8,
 
+    // High-Liquidity Hot Tokens Settings
+    enableHotTokensLp: true,
+    hotTokensCapitalUsd: 20,
+
     larkNotification: true,
     webhookUrl: DEFAULT_LARK_WEBHOOK_URL,
     walletAddress: undefined,
@@ -143,7 +160,7 @@ export class LpService {
 
   private rhClient = createPublicClient({
     chain: robinhoodChain,
-    transport: http("https://rpc.mainnet.chain.robinhood.com"),
+    transport: rpcTransport,
   });
 
   public constructor() {
@@ -492,6 +509,7 @@ export class LpService {
       winCount: currentModeStats.winCount,
       lossCount: currentModeStats.lossCount,
       winRatePct: currentModeStats.winRatePct,
+      hotTokens: this.cachedHotTokens,
     };
   }
 
@@ -506,16 +524,36 @@ export class LpService {
     this.isRunning = true;
 
     if (this.monitorTimer) clearInterval(this.monitorTimer);
+    let cycleCount = 0;
     // Inspect every 30 seconds
     this.monitorTimer = setInterval(() => {
+      cycleCount++;
       this.inspectPositions().catch((err) => {
         console.warn("[LpService] 做市仓位巡检异常:", err?.message || err);
       });
+
+      // Every 2 minutes (4 cycles): scan hot tokens and check for auto-LP
+      if (cycleCount % 4 === 0) {
+        import("./hot-tokens.server")
+          .then(async ({ hotTokensService }) => {
+            const tokens = await hotTokensService.getHotTokens();
+            this.cachedHotTokens = tokens;
+            await hotTokensService.evaluateHotTokensAutoLp();
+          })
+          .catch((err) => console.warn("[LpService] 热门币种巡检异常:", err?.message || err));
+      }
     }, 30_000);
     this.monitorTimer.unref();
 
+    // Initial hot tokens refresh
+    import("./hot-tokens.server")
+      .then(async ({ hotTokensService }) => {
+        this.cachedHotTokens = await hotTokensService.getHotTokens();
+      })
+      .catch(() => {});
+
     console.log(
-      `🌊 [LpService] V3 非对称 LP 做市引擎已启动 (模式: ${this.config.dryRun ? "🛡️ 模拟做市 (Dry-Run)" : "🚀 真实链上 (Live)"}, 自动做市: ${this.config.autoLpEnabled ? "开启" : "暂停"})`,
+      `🌊 [LpService] V3 非对称 LP 做市引擎已启动 (模式: ${this.config.dryRun ? "🛡️ 模拟做市 (Dry-Run)" : "🚀 真实链上 (Live)"}, 自动做市: ${this.config.autoLpEnabled ? "开启" : "暂停"}, 热门币做市: ${this.config.enableHotTokensLp !== false ? "开启" : "关闭"})`,
     );
   }
 
@@ -933,7 +971,7 @@ export class LpService {
           const wallet = createWalletClient({
             account,
             chain: robinhoodChain,
-            transport: http("https://rpc.mainnet.chain.robinhood.com"),
+            transport: rpcTransport,
           });
 
           const npmAddress = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
@@ -1462,6 +1500,71 @@ export class LpService {
     const pos = this.activePositions.get(positionId);
     if (!pos) return null;
 
+    let onChainCloseTx: string | undefined = undefined;
+
+    // Real on-chain Uniswap V3 liquidity withdrawal & collection
+    if (!pos.dryRun && pos.tokenId && this.rawPrivateKey) {
+      try {
+        console.log(`[LpService] 🚀 正在向 Uniswap V3 发起链上撤池提取: NFT #${pos.tokenId}...`);
+        const account = privateKeyToAccount(this.rawPrivateKey as `0x${string}`);
+        const wallet = createWalletClient({
+          account,
+          chain: robinhoodChain,
+          transport: rpcTransport,
+        });
+        const npmAddress = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
+        const tokenIdBig = BigInt(pos.tokenId);
+
+        const onChainPos = await this.rhClient.readContract({
+          address: npmAddress,
+          abi: POSITION_MANAGER_ABI,
+          functionName: "positions",
+          args: [tokenIdBig],
+        });
+        const currentLiquidity = onChainPos[7];
+
+        if (currentLiquidity > 0n) {
+          const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+          const decHash = await wallet.writeContract({
+            address: npmAddress,
+            abi: POSITION_MANAGER_ABI,
+            functionName: "decreaseLiquidity",
+            args: [{
+              tokenId: tokenIdBig,
+              liquidity: currentLiquidity,
+              amount0Min: 0n,
+              amount1Min: 0n,
+              deadline,
+            }],
+          });
+          console.log(`[LpService] ⏳ decreaseLiquidity 等待链上确认: ${decHash}...`);
+          await this.rhClient.waitForTransactionReceipt({ hash: decHash });
+          console.log(`[LpService] ✅ 成功撤回链上流动性: ${decHash}`);
+        }
+
+        const maxUint128 = 2n ** 128n - 1n;
+        const colHash = await wallet.writeContract({
+          address: npmAddress,
+          abi: POSITION_MANAGER_ABI,
+          functionName: "collect",
+          args: [{
+            tokenId: tokenIdBig,
+            recipient: account.address,
+            amount0Max: maxUint128,
+            amount1Max: maxUint128,
+          }],
+        });
+        console.log(`[LpService] ⏳ collect 等待链上确认: ${colHash}...`);
+        await this.rhClient.waitForTransactionReceipt({ hash: colHash });
+        console.log(`[LpService] ✅ 成功提取本金与手续费至钱包: ${colHash}`);
+        onChainCloseTx = colHash;
+
+        this.refreshWalletBalances().catch(() => {});
+      } catch (err: any) {
+        console.error(`[LpService] ❌ 链上撤池异常 (NFT #${pos.tokenId}):`, err?.message || err);
+      }
+    }
+
     pos.status = status;
     pos.exitReason = reason;
     pos.closeTime = new Date().toISOString();
@@ -1470,7 +1573,10 @@ export class LpService {
       id: `tx-${Date.now()}-exit`,
       type: "EXIT_FLASH",
       timestamp: pos.closeTime,
-      details: `撤回流动性并一键兑回 USDG: ${reason} (最终实现手续费: $${pos.feeEarnedUsd.toFixed(2)}, IL: -$${pos.impermanentLossUsd.toFixed(2)})`,
+      txHash: onChainCloseTx,
+      details: pos.dryRun
+        ? `撤回流动性并一键兑回 USDG: ${reason} (最终实现手续费: $${pos.feeEarnedUsd.toFixed(2)}, IL: -$${pos.impermanentLossUsd.toFixed(2)})`
+        : `[真实链上] 成功撤出 NFT #${pos.tokenId} 流动性并提取至钱包: ${reason} (Tx: ${onChainCloseTx || "已完成"})`,
       amountUsd: pos.initialUsdInvested + pos.netPnlUsd,
       feeHarvestedUsd: pos.feeEarnedUsd,
       dryRun: pos.dryRun,
@@ -1538,7 +1644,9 @@ export class LpService {
       const res = await fetch(
         `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`,
         {
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; MemeScout/1.0)" },
+          headers: {
+            "User-Agent": BROWSER_UA,
+          },
           signal: AbortSignal.timeout(6000),
         },
       );
@@ -1546,7 +1654,11 @@ export class LpService {
         const j = (await res.json().catch(() => ({}))) as any;
         const pairs = Array.isArray(j.pairs) ? j.pairs : [];
         if (pairs.length > 0) {
-          const p = pairs[0];
+          const rhPairs = pairs.filter((x: any) => x.chainId === "robinhood");
+          const p =
+            rhPairs.find((x: any) => x.quoteToken?.symbol?.toUpperCase() === "USDG") ||
+            rhPairs[0] ||
+            pairs[0];
           return {
             priceUsd: Number(p.priceUsd) || null,
             liquidityUsd: Number(p.liquidity?.usd) || null,

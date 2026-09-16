@@ -529,10 +529,35 @@ export type LpConfig = {
   singleSidedUpperMaxPct?: number; // default: 45 (+45% 穿上沿结项止盈区间)
   fastStopLossPct?: number; // default: -8 (-8% 快速防崩止损)
 
+  // High-Liquidity Hot Tokens Settings
+  enableHotTokensLp?: boolean; // default: true (自动关注并做市高流动性蓝筹与美股RWA代币)
+  hotTokensCapitalUsd?: number; // default: 20 (每池做市资金)
+
   larkNotification: boolean;
   webhookUrl?: string;
   walletAddress?: string;
   hasRhKey: boolean;
+};
+
+export type HotTokenItem = {
+  symbol: string;
+  name: string;
+  tokenAddress: string;
+  pairAddress: string;
+  quoteSymbol: string;
+  quoteAddress: string;
+  feeTier: number; // e.g. 500, 3000
+  priceUsd: number;
+  liquidityUsd: number;
+  volume24hUsd: number;
+  volume5mUsd: number;
+  estDailyFeeRatePct: number;
+  stage: LpStage;
+  category: LpCategory;
+  isRwa: boolean;
+  stockSymbol?: string;
+  hasActivePosition: boolean;
+  statusDesc: string;
 };
 
 export type LpTxRecord = {
@@ -639,6 +664,7 @@ export type LpState = {
   lossCount: number;
   winRatePct: number;
   lastOpportunityScanTime?: string;
+  hotTokens?: HotTokenItem[];
 };
 
 export type LpWalletStatus = {

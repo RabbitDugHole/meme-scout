@@ -297,6 +297,8 @@ export const updateLpConfig = createServerFn({ method: "POST" })
       singleSidedUpperCorePct?: number;
       singleSidedUpperMaxPct?: number;
       fastStopLossPct?: number;
+      enableHotTokensLp?: boolean;
+      hotTokensCapitalUsd?: number;
       larkNotification?: boolean;
       webhookUrl?: string;
     }) => input,
@@ -446,5 +448,62 @@ export const resetTwoFactor = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { twoFactorService } = await import("./two-factor.server");
     return twoFactorService.resetConfig(data.currentCode);
+  });
+
+// ==========================================
+// Hot Tokens Market Making Server Actions
+// ==========================================
+
+export const getHotTokensList = createServerFn({ method: "GET" }).handler(
+  async () => {
+    const { hotTokensService } = await import("./hot-tokens.server");
+    return hotTokensService.getHotTokens(true);
+  },
+);
+
+export const triggerHotTokenLpAction = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      symbol: string;
+      customCapitalUsd?: number;
+      dryRun?: boolean;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { hotTokensService, CURATED_HOT_TOKENS } = await import("./hot-tokens.server");
+    const { lpService } = await import("./lp.server");
+    const item = CURATED_HOT_TOKENS.find(
+      (t) => t.symbol.toUpperCase() === data.symbol.toUpperCase(),
+    );
+    if (!item) {
+      throw new Error(`未找到热门标的 $${data.symbol}`);
+    }
+
+    const liveTokens = await hotTokensService.getHotTokens(true);
+    const liveItem = liveTokens.find(
+      (t) => t.symbol.toUpperCase() === data.symbol.toUpperCase(),
+    );
+
+    const priceUsd = liveItem?.priceUsd || 1;
+    const liquidityUsd = liveItem?.liquidityUsd || 50000;
+    const volume5m = liveItem?.volume5mUsd || 5000;
+
+    return lpService.openLpPosition({
+      tokenAddress: item.tokenAddress,
+      symbol: item.symbol,
+      name: item.name,
+      chain: "Robinhood Chain",
+      pairAddress: item.pairAddress,
+      feeTier: item.feeTier,
+      priceUsd,
+      liquidityUsd,
+      volume5m,
+      stage: item.stage,
+      category: item.category,
+      isRwa: item.isRwa,
+      stockSymbol: item.stockSymbol,
+      customCapitalUsd: data.customCapitalUsd,
+      dryRun: data.dryRun,
+    });
   });
 

@@ -50,6 +50,8 @@ import {
   importLpWalletAction,
   disconnectLpWalletAction,
   getLpWalletStatusAction,
+  getHotTokensList,
+  triggerHotTokenLpAction,
 } from "@/lib/scout/actions";
 import { formatUsd, shortAddr } from "@/lib/scout/format";
 import type { LpPosition, LpRangeSegment, V4PoolItem } from "@/lib/scout/types";
@@ -78,6 +80,27 @@ export function LpPanel({
     refetchInterval: 15000,
   });
 
+  // Fetch High-Liquidity Hot Tokens List
+  const { data: hotTokensList, isLoading: isHotLoading, refetch: refetchHotTokens } = useQuery({
+    queryKey: ["hotTokensList"],
+    queryFn: () => getHotTokensList(),
+    refetchInterval: 10000,
+  });
+
+  // Hot Token One-Click LP Mutation
+  const triggerHotLpMut = useMutation({
+    mutationFn: (args: { symbol: string; customCapitalUsd?: number; dryRun?: boolean }) =>
+      triggerHotTokenLpAction({ data: args }),
+    onSuccess: (_, vars) => {
+      toast.success(`成功为热门标的 $${vars.symbol} 建立做市头寸！`);
+      qc.invalidateQueries({ queryKey: ["lpState"] });
+      qc.invalidateQueries({ queryKey: ["hotTokensList"] });
+    },
+    onError: (err: any) => {
+      toast.error(err?.message || "热门做市开池失败");
+    },
+  });
+
   // Config Form State
   const config = lpData?.config;
   const [cfgDryRun, setCfgDryRun] = useState(true);
@@ -104,6 +127,10 @@ export function LpPanel({
   const [cfgSingleSidedMaxPct, setCfgSingleSidedMaxPct] = useState(45);
   const [cfgFastStopLossPct, setCfgFastStopLossPct] = useState(-8);
 
+  // High-Liquidity Hot Tokens Config States
+  const [cfgEnableHotTokensLp, setCfgEnableHotTokensLp] = useState(true);
+  const [cfgHotTokensCapital, setCfgHotTokensCapital] = useState(20);
+
   // Sync form state when config loads
   const [hasSynced, setHasSynced] = useState(false);
   if (config && !hasSynced) {
@@ -126,6 +153,8 @@ export function LpPanel({
     if (config.singleSidedUpperCorePct !== undefined) setCfgSingleSidedCorePct(config.singleSidedUpperCorePct);
     if (config.singleSidedUpperMaxPct !== undefined) setCfgSingleSidedMaxPct(config.singleSidedUpperMaxPct);
     if (config.fastStopLossPct !== undefined) setCfgFastStopLossPct(config.fastStopLossPct);
+    if (config.enableHotTokensLp !== undefined) setCfgEnableHotTokensLp(config.enableHotTokensLp);
+    if (config.hotTokensCapitalUsd !== undefined) setCfgHotTokensCapital(config.hotTokensCapitalUsd);
     setHasSynced(true);
   }
 
@@ -134,6 +163,7 @@ export function LpPanel({
     mutationFn: (data: any) => updateLpConfig({ data }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["lpState"] });
+      qc.invalidateQueries({ queryKey: ["hotTokensList"] });
       toast.success("做市策略与风控配置已成功保存更新");
     },
     onError: (err: any) => {
@@ -969,6 +999,30 @@ export function LpPanel({
               />
             </div>
 
+            {/* Param 19: Hot Tokens Auto LP Enabled */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">🔥 热门蓝筹/RWA 自动做市</label>
+              <select
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground text-xs"
+                value={cfgEnableHotTokensLp ? "true" : "false"}
+                onChange={(e) => setCfgEnableHotTokensLp(e.target.value === "true")}
+              >
+                <option value="true">开启 (空闲池位自动分配主流标的)</option>
+                <option value="false">关闭 (仅手动触发热门做市)</option>
+              </select>
+            </div>
+
+            {/* Param 20: Hot Tokens Capital */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-muted-foreground font-medium">热门标的单池资金 ($ USDG)</label>
+              <input
+                type="number"
+                className="bg-secondary/60 border border-border/60 rounded-md px-2.5 py-1.5 text-foreground"
+                value={cfgHotTokensCapital}
+                onChange={(e) => setCfgHotTokensCapital(Number(e.target.value))}
+              />
+            </div>
+
             {/* Actions */}
             <div className="flex items-end gap-2 col-span-1 sm:col-span-2 md:col-span-3">
               <Button
@@ -994,6 +1048,8 @@ export function LpPanel({
                     singleSidedUpperCorePct: cfgSingleSidedCorePct,
                     singleSidedUpperMaxPct: cfgSingleSidedMaxPct,
                     fastStopLossPct: cfgFastStopLossPct,
+                    enableHotTokensLp: cfgEnableHotTokensLp,
+                    hotTokensCapitalUsd: cfgHotTokensCapital,
                   })
                 }
                 disabled={updateConfigMut.isPending}
@@ -1004,6 +1060,124 @@ export function LpPanel({
           </div>
         </div>
       )}
+
+      {/* High-Liquidity Hot Tokens Section */}
+      <div className="flex flex-col gap-3 rounded-xl border border-amber-500/30 bg-gradient-to-b from-amber-950/20 via-background to-background p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
+          <div className="flex items-center gap-2">
+            <Flame className="size-5 text-amber-400 animate-pulse" />
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-foreground">
+                  🔥 热门高流动性做市 (主流蓝筹 WETH & 美股 RWA 专区)
+                </h3>
+                <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30">
+                  {hotTokensList?.length || 7} 个核心池
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                聚焦 Robinhood 链上高换手蓝筹（WETH/USDG 日交易量上亿）与已部署 Uniswap V3 的美股 RWA 代币（AAPL、TSLA、NVDA、SPY 等），专注极深流动性摩擦收租
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs border-amber-500/30 hover:bg-amber-500/10 text-amber-300"
+              onClick={() => refetchHotTokens()}
+            >
+              <RefreshCw className="size-3 mr-1" />
+              刷新行情
+            </Button>
+          </div>
+        </div>
+
+        {/* Hot Tokens Cards Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {(hotTokensList || []).map((t) => (
+            <div
+              key={t.symbol}
+              className={cn(
+                "flex flex-col justify-between rounded-lg border p-3 transition-colors",
+                t.hasActivePosition
+                  ? "border-emerald-500/40 bg-emerald-950/10"
+                  : "border-border/50 bg-secondary/20 hover:border-amber-500/40"
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-sm text-foreground">${t.symbol}</span>
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-amber-500/30 text-amber-300">
+                      {t.category === "RWA" ? "🏛️ 美股" : "💎 蓝筹"}
+                    </Badge>
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-muted-foreground/30">
+                      {t.feeTier === 500 ? "0.05%" : "0.3%"}
+                    </Badge>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground truncate max-w-[140px]">
+                    {t.name}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="font-bold text-sm">
+                    ${t.priceUsd > 1 ? t.priceUsd.toFixed(2) : t.priceUsd.toFixed(4)}
+                  </div>
+                  <div className="text-[10px] text-emerald-400 font-medium">
+                    预估日费率 +{t.estDailyFeeRatePct}%
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 my-2.5 py-1.5 border-y border-border/30 text-[11px]">
+                <div>
+                  <span className="text-muted-foreground">24H 成交量:</span>
+                  <div className="font-semibold text-foreground">
+                    ${formatUsd(t.volume24hUsd)}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">做市池深度:</span>
+                  <div className="font-semibold text-foreground">
+                    ${formatUsd(t.liquidityUsd)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-[10px] text-muted-foreground mb-2.5 flex items-center gap-1">
+                <Info className="size-3 text-amber-400 shrink-0" />
+                <span className="truncate">{t.statusDesc}</span>
+              </div>
+
+              <div className="mt-auto pt-1">
+                {t.hasActivePosition ? (
+                  <Badge className="w-full justify-center bg-emerald-500/20 text-emerald-300 border-emerald-500/30 py-1 font-normal text-xs">
+                    <CheckCircle2 className="size-3 mr-1" /> 已在活跃做市中
+                  </Badge>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="w-full h-7 text-xs bg-amber-500 hover:bg-amber-600 text-black font-semibold shadow-sm"
+                    disabled={triggerHotLpMut.isPending}
+                    onClick={() =>
+                      triggerHotLpMut.mutate({
+                        symbol: t.symbol,
+                        customCapitalUsd: config?.hotTokensCapitalUsd || 20,
+                        dryRun: displayMode === "live" ? false : true,
+                      })
+                    }
+                  >
+                    <Zap className="size-3 mr-1 fill-current" />
+                    一键以 ${config?.hotTokensCapitalUsd || 20} 开做市池
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Robinhood V4 Barker Market Radar Section */}
       <div className="flex flex-col gap-3 rounded-xl border border-indigo-500/30 bg-gradient-to-b from-indigo-950/20 to-background p-4">
