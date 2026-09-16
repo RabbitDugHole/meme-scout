@@ -65,6 +65,7 @@ export function LpPanel({
   const qc = useQueryClient();
   const [showConfig, setShowConfig] = useState(false);
   const [radarFilter, setRadarFilter] = useState<"top" | "rwa" | "meme" | "new">("top");
+  const [hotTokenChainFilter, setHotTokenChainFilter] = useState<"all" | "robinhood" | "bsc" | "arbitrum">("all");
 
   // Fetch LP State
   const { data: lpData, isLoading, refetch } = useQuery({
@@ -91,10 +92,24 @@ export function LpPanel({
   const triggerHotLpMut = useMutation({
     mutationFn: (args: { symbol: string; customCapitalUsd?: number; dryRun?: boolean }) =>
       triggerHotTokenLpAction({ data: args }),
-    onSuccess: (_, vars) => {
-      toast.success(`成功为热门标的 $${vars.symbol} 建立做市头寸！`);
+    onSuccess: (pos, vars) => {
       qc.invalidateQueries({ queryKey: ["lpState"] });
       qc.invalidateQueries({ queryKey: ["hotTokensList"] });
+      if (!pos.dryRun) {
+        toast.success(`🎉 成功在 ${pos.chain?.toUpperCase()} 为热门标的 $${vars.symbol} 建立做市头寸 (NFT #${pos.tokenId || ""})！`);
+      } else if (displayMode === "live") {
+        toast.warning(`已转入【模拟盘】建立测算头寸（标的在 ${pos.chain?.toUpperCase()}，未扣除链上资金）`, {
+          action: pos.barkerUrl
+            ? {
+                label: "前往 Barker 做市",
+                onClick: () => window.open(pos.barkerUrl, "_blank"),
+              }
+            : undefined,
+        });
+        setDisplayMode("paper");
+      } else {
+        toast.success(`成功为热门标的 $${vars.symbol} 建立做市头寸！`);
+      }
     },
     onError: (err: any) => {
       toast.error(err?.message || "热门做市开池失败");
@@ -207,6 +222,8 @@ export function LpPanel({
           symbol: pool.token0Symbol,
           name: pool.pairName,
           chain: "robinhood",
+          protocol: "uniswap_v4_barker",
+          barkerUrl: pool.barkerUrl || "https://app.barker.money/raid/robinhood",
           pairAddress: pool.pairAddress,
           feeTier: pool.feeTierBps,
           priceUsd: pool.currentPriceUsd,
@@ -225,7 +242,17 @@ export function LpPanel({
       if (!pos.dryRun) {
         toast.success(`🎉 真实链上做市头寸已铸造: $${pos.symbol} (NFT #${pos.tokenId || ""})`);
       } else if (displayMode === "live") {
-        toast.warning(`已转入【模拟盘】建立测算头寸（标的仅在 V4 协议运行，未扣除链上资金）`);
+        toast.warning(
+          `已转入【模拟盘】建立测算头寸（标的在 Uniswap V4 / Barker 协议运行，未扣除链上资金）`,
+          {
+            action: pos.barkerUrl
+              ? {
+                  label: "跳转 Barker 做市",
+                  onClick: () => window.open(pos.barkerUrl, "_blank"),
+                }
+              : undefined,
+          },
+        );
         setDisplayMode("paper");
       } else {
         toast.success(`已成功在模拟盘为 $${pos.symbol} 建立做市头寸！`);
@@ -413,7 +440,7 @@ export function LpPanel({
                     : "text-amber-400 border-amber-500/30",
                 )}
               >
-                Robinhood Chain (ID: 4663)
+                多链做市支持: Robinhood · BSC · Arbitrum
               </Badge>
               {hasWallet && (
                 <Badge
@@ -456,29 +483,18 @@ export function LpPanel({
                   </a>
                   <span className="text-muted-foreground/40">|</span>
                   <span>
-                    ⛽ ETH (Gas):{" "}
-                    <strong
-                      className={cn(
-                        Number(ethBalance) < 0.001
-                          ? "text-rose-400"
-                          : "text-foreground font-semibold",
-                      )}
-                    >
-                      {ethBalance} ETH
-                    </strong>
+                    🏛️ RH:{" "}
+                    <strong>{ethBalance} ETH</strong> / <strong>${usdgBalance} USDG</strong>
                   </span>
                   <span className="text-muted-foreground/40">|</span>
                   <span>
-                    💵 USDG (做市本金):{" "}
-                    <strong
-                      className={cn(
-                        Number(usdgBalance) < 10
-                          ? "text-amber-400"
-                          : "text-foreground font-semibold",
-                      )}
-                    >
-                      ${usdgBalance}
-                    </strong>
+                    🥞 BSC:{" "}
+                    <strong>{walletStatus?.bnbBalance ?? "0.0000"} BNB</strong> / <strong>${walletStatus?.bscUsdtBalance ?? "0.00"} USDT</strong>
+                  </span>
+                  <span className="text-muted-foreground/40">|</span>
+                  <span>
+                    ⚡ ARB:{" "}
+                    <strong>{walletStatus?.arbEthBalance ?? "0.0000"} ETH</strong> / <strong>${walletStatus?.arbUsdcBalance ?? "0.00"} USDC</strong>
                   </span>
                   {walletStatus?.warning && (
                     <span className="text-[11px] text-amber-400 ml-1">
@@ -488,8 +504,7 @@ export function LpPanel({
                 </>
               ) : (
                 <span>
-                  开启实盘做市需在 <strong>Robinhood Chain (ID: 4663)</strong> 准备{" "}
-                  <strong>ETH</strong> (Gas燃料) 与 <strong>USDG</strong> (做市本金)，点击右侧按钮导入独立子钱包私钥。
+                  开启实盘做市可在 <strong>Robinhood</strong>、<strong>BSC (Pancake V3)</strong> 或 <strong>Arbitrum (Uniswap V3)</strong> 准备对应 Gas 燃料与稳定币本金，点击右侧按钮导入独立钱包私钥。
                 </span>
               )}
             </div>
@@ -1067,21 +1082,74 @@ export function LpPanel({
           <div className="flex items-center gap-2">
             <Flame className="size-5 text-amber-400 animate-pulse" />
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-base font-bold text-foreground">
-                  🔥 热门高流动性做市 (主流蓝筹 WETH & 美股 RWA 专区)
+                  🔥 多链高流动性做市 (Robinhood · BSC · Arbitrum 蓝筹/RWA/Meme)
                 </h3>
                 <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30">
-                  {hotTokensList?.length || 7} 个核心池
+                  {
+                    (hotTokensList || []).filter(
+                      (t) => hotTokenChainFilter === "all" || t.chain?.toLowerCase() === hotTokenChainFilter,
+                    ).length
+                  }{" "}
+                  / {hotTokensList?.length || 14} 个标的
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
-                聚焦 Robinhood 链上高换手蓝筹（WETH/USDG 日交易量上亿）与已部署 Uniswap V3 的美股 RWA 代币（AAPL、TSLA、NVDA、SPY 等），专注极深流动性摩擦收租
+                支持 Uniswap V3 (Robinhood / Arbitrum)、PancakeSwap V3 (BSC) 与 Uniswap V4 (Barker Meme) 聚合做市
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Chain Selector Filter Pills */}
+            <div className="flex items-center rounded-lg bg-background/60 p-0.5 border border-border/50 text-xs">
+              <button
+                className={cn(
+                  "px-2.5 py-1 rounded-md transition-colors",
+                  hotTokenChainFilter === "all"
+                    ? "bg-amber-500 text-black font-semibold shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setHotTokenChainFilter("all")}
+              >
+                全部
+              </button>
+              <button
+                className={cn(
+                  "px-2.5 py-1 rounded-md transition-colors",
+                  hotTokenChainFilter === "robinhood"
+                    ? "bg-amber-500 text-black font-semibold shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setHotTokenChainFilter("robinhood")}
+              >
+                Robinhood (V3/V4)
+              </button>
+              <button
+                className={cn(
+                  "px-2.5 py-1 rounded-md transition-colors",
+                  hotTokenChainFilter === "bsc"
+                    ? "bg-amber-500 text-black font-semibold shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setHotTokenChainFilter("bsc")}
+              >
+                BSC (Pancake V3)
+              </button>
+              <button
+                className={cn(
+                  "px-2.5 py-1 rounded-md transition-colors",
+                  hotTokenChainFilter === "arbitrum"
+                    ? "bg-amber-500 text-black font-semibold shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setHotTokenChainFilter("arbitrum")}
+              >
+                Arbitrum (Uniswap V3)
+              </button>
+            </div>
+
             <Button
               variant="outline"
               size="sm"
@@ -1096,86 +1164,120 @@ export function LpPanel({
 
         {/* Hot Tokens Cards Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {(hotTokensList || []).map((t) => (
-            <div
-              key={t.symbol}
-              className={cn(
-                "flex flex-col justify-between rounded-lg border p-3 transition-colors",
-                t.hasActivePosition
-                  ? "border-emerald-500/40 bg-emerald-950/10"
-                  : "border-border/50 bg-secondary/20 hover:border-amber-500/40"
-              )}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-sm text-foreground">${t.symbol}</span>
-                    <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-amber-500/30 text-amber-300">
-                      {t.category === "RWA" ? "🏛️ 美股" : "💎 蓝筹"}
-                    </Badge>
-                    <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-muted-foreground/30">
-                      {t.feeTier === 500 ? "0.05%" : "0.3%"}
-                    </Badge>
-                  </div>
-                  <div className="text-[11px] text-muted-foreground truncate max-w-[140px]">
-                    {t.name}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="font-bold text-sm">
-                    ${t.priceUsd > 1 ? t.priceUsd.toFixed(2) : t.priceUsd.toFixed(4)}
-                  </div>
-                  <div className="text-[10px] text-emerald-400 font-medium">
-                    预估日费率 +{t.estDailyFeeRatePct}%
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 my-2.5 py-1.5 border-y border-border/30 text-[11px]">
-                <div>
-                  <span className="text-muted-foreground">24H 成交量:</span>
-                  <div className="font-semibold text-foreground">
-                    ${formatUsd(t.volume24hUsd)}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">做市池深度:</span>
-                  <div className="font-semibold text-foreground">
-                    ${formatUsd(t.liquidityUsd)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-[10px] text-muted-foreground mb-2.5 flex items-center gap-1">
-                <Info className="size-3 text-amber-400 shrink-0" />
-                <span className="truncate">{t.statusDesc}</span>
-              </div>
-
-              <div className="mt-auto pt-1">
-                {t.hasActivePosition ? (
-                  <Badge className="w-full justify-center bg-emerald-500/20 text-emerald-300 border-emerald-500/30 py-1 font-normal text-xs">
-                    <CheckCircle2 className="size-3 mr-1" /> 已在活跃做市中
-                  </Badge>
-                ) : (
-                  <Button
-                    size="sm"
-                    className="w-full h-7 text-xs bg-amber-500 hover:bg-amber-600 text-black font-semibold shadow-sm"
-                    disabled={triggerHotLpMut.isPending}
-                    onClick={() =>
-                      triggerHotLpMut.mutate({
-                        symbol: t.symbol,
-                        customCapitalUsd: config?.hotTokensCapitalUsd || 20,
-                        dryRun: displayMode === "live" ? false : true,
-                      })
-                    }
-                  >
-                    <Zap className="size-3 mr-1 fill-current" />
-                    一键以 ${config?.hotTokensCapitalUsd || 20} 开做市池
-                  </Button>
+          {(hotTokensList || [])
+            .filter(
+              (t) => hotTokenChainFilter === "all" || t.chain?.toLowerCase() === hotTokenChainFilter,
+            )
+            .map((t) => (
+              <div
+                key={`${t.chain}-${t.symbol}`}
+                className={cn(
+                  "flex flex-col justify-between rounded-lg border p-3 transition-colors",
+                  t.hasActivePosition
+                    ? "border-emerald-500/40 bg-emerald-950/10"
+                    : "border-border/50 bg-secondary/20 hover:border-amber-500/40",
                 )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-bold text-sm text-foreground">${t.symbol}</span>
+                      <Badge
+                        variant="outline"
+                        className="text-[9px] px-1 py-0 h-4 border-amber-500/30 text-amber-300"
+                      >
+                        {t.chain === "bsc" ? "BSC" : t.chain === "arbitrum" ? "ARB" : "RH"}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="text-[9px] px-1 py-0 h-4 border-cyan-500/30 text-cyan-300"
+                      >
+                        {t.protocolLabel}
+                      </Badge>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground truncate max-w-[150px] mt-0.5">
+                      {t.name}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-bold text-sm">
+                      ${t.priceUsd > 1 ? t.priceUsd.toFixed(2) : t.priceUsd.toFixed(6)}
+                    </div>
+                    <div className="text-[10px] text-emerald-400 font-medium">
+                      预估日费率 +{t.estDailyFeeRatePct}%
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 my-2.5 py-1.5 border-y border-border/30 text-[11px]">
+                  <div>
+                    <span className="text-muted-foreground">24H 成交量:</span>
+                    <div className="font-semibold text-foreground">
+                      ${formatUsd(t.volume24hUsd)}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">做市池深度:</span>
+                    <div className="font-semibold text-foreground">
+                      ${formatUsd(t.liquidityUsd)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-muted-foreground mb-2.5 flex items-center gap-1">
+                  <Info className="size-3 text-amber-400 shrink-0" />
+                  <span className="truncate">{t.statusDesc}</span>
+                </div>
+
+                <div className="mt-auto pt-1 flex items-center gap-1.5">
+                  {t.hasActivePosition ? (
+                    <Badge className="w-full justify-center bg-emerald-500/20 text-emerald-300 border-emerald-500/30 py-1 font-normal text-xs">
+                      <CheckCircle2 className="size-3 mr-1" /> 已在活跃做市中
+                    </Badge>
+                  ) : (
+                    <>
+                      <Button
+                        size="sm"
+                        className="flex-1 h-7 text-xs bg-amber-500 hover:bg-amber-600 text-black font-semibold shadow-sm"
+                        disabled={triggerHotLpMut.isPending}
+                        onClick={() =>
+                          triggerHotLpMut.mutate({
+                            symbol: t.symbol,
+                            customCapitalUsd: config?.hotTokensCapitalUsd || 20,
+                            dryRun: displayMode === "live" ? false : true,
+                          })
+                        }
+                      >
+                        <Zap className="size-3 mr-1 fill-current" />
+                        一键建仓 ${config?.hotTokensCapitalUsd || 20}
+                      </Button>
+                      {t.barkerUrl && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs border-amber-500/30 hover:bg-amber-500/10 text-amber-300 shrink-0"
+                          onClick={() => window.open(t.barkerUrl, "_blank")}
+                          title="打开 Barker 官方终端做市"
+                        >
+                          Barker ↗
+                        </Button>
+                      )}
+                      {t.dexUrl && !t.barkerUrl && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs border-muted-foreground/30 hover:bg-secondary/40 text-muted-foreground shrink-0"
+                          onClick={() => window.open(t.dexUrl, "_blank")}
+                          title="在 DEX 查看流动池"
+                        >
+                          <ExternalLink className="size-3" />
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
         </div>
       </div>
 

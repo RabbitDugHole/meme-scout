@@ -315,6 +315,8 @@ export const openManualLp = createServerFn({ method: "POST" })
       symbol: string;
       name?: string;
       chain: string;
+      protocol?: string;
+      barkerUrl?: string;
       pairAddress?: string;
       priceUsd: number;
       liquidityUsd: number;
