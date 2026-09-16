@@ -546,6 +546,11 @@ export type HotTokenItem = {
   pairAddress: string;
   quoteSymbol: string;
   quoteAddress: string;
+  chain: string; // e.g. "robinhood" | "bsc" | "arbitrum"
+  protocol: string; // e.g. "uniswap_v3" | "pancake_v3" | "uniswap_v4_barker"
+  protocolLabel: string; // e.g. "Uniswap V3" | "PancakeSwap V3" | "Uniswap V4 (Barker)"
+  barkerUrl?: string;
+  dexUrl?: string;
   feeTier: number; // e.g. 500, 3000
   priceUsd: number;
   liquidityUsd: number;
@@ -583,7 +588,9 @@ export type LpPosition = {
   tokenAddress: string;
   symbol: string;
   name?: string;
-  chain: "robinhood" | "bsc" | string;
+  chain: "robinhood" | "bsc" | "arbitrum" | "base" | string;
+  protocol?: "uniswap_v3" | "pancake_v3" | "uniswap_v4_barker" | string;
+  barkerUrl?: string;
   pairAddress?: string;
   feeTier: number; // e.g. 10000 (1%), 40000 (4%), 200000 (20%)
   stage: LpStage;
@@ -672,6 +679,10 @@ export type LpWalletStatus = {
   walletAddress?: string;
   ethBalance?: string;
   usdgBalance?: string;
+  bnbBalance?: string;
+  bscUsdtBalance?: string;
+  arbEthBalance?: string;
+  arbUsdcBalance?: string;
   isReadyForLive: boolean;
   warning?: string;
   lastCheckedAt?: string;
