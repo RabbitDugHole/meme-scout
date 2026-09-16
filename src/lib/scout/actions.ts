@@ -454,12 +454,12 @@ export const resetTwoFactor = createServerFn({ method: "POST" })
 // Hot Tokens Market Making Server Actions
 // ==========================================
 
-export const getHotTokensList = createServerFn({ method: "GET" }).handler(
-  async () => {
+export const getHotTokensList = createServerFn({ method: "GET" })
+  .validator((input?: { chain?: string }) => input)
+  .handler(async ({ data }) => {
     const { hotTokensService } = await import("./hot-tokens.server");
-    return hotTokensService.getHotTokens(true);
-  },
-);
+    return hotTokensService.getHotTokens(true, data?.chain);
+  });
 
 export const triggerHotTokenLpAction = createServerFn({ method: "POST" })
   .validator(
@@ -492,7 +492,9 @@ export const triggerHotTokenLpAction = createServerFn({ method: "POST" })
       tokenAddress: item.tokenAddress,
       symbol: item.symbol,
       name: item.name,
-      chain: "Robinhood Chain",
+      chain: item.chain,
+      protocol: item.protocol,
+      barkerUrl: item.barkerUrl,
       pairAddress: item.pairAddress,
       feeTier: item.feeTier,
       priceUsd,
