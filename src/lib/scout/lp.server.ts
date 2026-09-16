@@ -31,7 +31,13 @@ import {
   DEFAULT_LARK_WEBHOOK_URL,
 } from "./lark";
 import { extractRwaStock } from "./stocks";
-import { USDG, UNISWAP_V3_ROBINHOOD } from "./constants";
+import {
+  USDG,
+  UNISWAP_V3_ROBINHOOD,
+  PANCAKE_V3_BSC,
+  UNISWAP_V3_ARBITRUM,
+} from "./constants";
+import { bsc, arbitrum } from "viem/chains";
 
 // Robinhood Chain definition
 const robinhoodChain = defineChain({
@@ -53,6 +59,22 @@ const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 export const rpcTransport = http("https://rpc.mainnet.chain.robinhood.com", {
+  fetchOptions: {
+    headers: {
+      "User-Agent": BROWSER_UA,
+    },
+  },
+});
+
+export const bscTransport = http("https://bsc-dataseed1.binance.org", {
+  fetchOptions: {
+    headers: {
+      "User-Agent": BROWSER_UA,
+    },
+  },
+});
+
+export const arbTransport = http("https://arb1.arbitrum.io/rpc", {
   fetchOptions: {
     headers: {
       "User-Agent": BROWSER_UA,
@@ -163,6 +185,16 @@ export class LpService {
     transport: rpcTransport,
   });
 
+  private bscClient = createPublicClient({
+    chain: bsc,
+    transport: bscTransport,
+  });
+
+  private arbClient = createPublicClient({
+    chain: arbitrum,
+    transport: arbTransport,
+  });
+
   public constructor() {
     this.loadFromStorage();
     this.initWalletConfig();
@@ -238,6 +270,10 @@ export class LpService {
         walletAddress: undefined,
         ethBalance: "0.0000",
         usdgBalance: "0.00",
+        bnbBalance: "0.0000",
+        bscUsdtBalance: "0.00",
+        arbEthBalance: "0.0000",
+        arbUsdcBalance: "0.00",
         isReadyForLive: false,
         lastCheckedAt: new Date().toISOString(),
       };
@@ -245,52 +281,102 @@ export class LpService {
     }
 
     const addr = this.config.walletAddress as `0x${string}`;
-    try {
-      const ethBalRaw = await this.rhClient.getBalance({ address: addr });
-      const ethFormatted = (Number(ethBalRaw) / 1e18).toFixed(4);
 
-      let usdgFormatted = "0.00";
+    let ethFormatted = this.cachedWalletStatus?.ethBalance || "0.0000";
+    let usdgFormatted = this.cachedWalletStatus?.usdgBalance || "0.00";
+    let bnbFormatted = this.cachedWalletStatus?.bnbBalance || "0.0000";
+    let bscUsdtFormatted = this.cachedWalletStatus?.bscUsdtBalance || "0.00";
+    let arbEthFormatted = this.cachedWalletStatus?.arbEthBalance || "0.0000";
+    let arbUsdcFormatted = this.cachedWalletStatus?.arbUsdcBalance || "0.00";
+
+    // 1. Robinhood Balances
+    const rhPromise = (async () => {
       try {
+        const ethBalRaw = await this.rhClient.getBalance({ address: addr });
+        ethFormatted = (Number(ethBalRaw) / 1e18).toFixed(4);
+
         const usdgBalRaw = await this.rhClient.readContract({
           address: USDG as `0x${string}`,
           abi: ERC20_ABI,
           functionName: "balanceOf",
           args: [addr],
         });
-        // USDG has 6 decimals on Robinhood Chain
         usdgFormatted = (Number(usdgBalRaw) / 1e6).toFixed(2);
-      } catch (err) {
-        console.warn("[LpService] 查询 USDG 余额失败:", err);
+      } catch (err: any) {
+        console.warn("[LpService] 查询 Robinhood 余额失败:", err?.message || err);
       }
+    })();
 
-      const ethNum = Number(ethFormatted);
-      const usdgNum = Number(usdgFormatted);
-      const isReady = ethNum >= 0.001 && usdgNum >= 10;
-      let warning: string | undefined = undefined;
+    // 2. BSC Balances (BNB & USDT)
+    const bscPromise = (async () => {
+      try {
+        const bnbBalRaw = await this.bscClient.getBalance({ address: addr });
+        bnbFormatted = (Number(bnbBalRaw) / 1e18).toFixed(4);
 
-      if (ethNum < 0.001) {
-        warning = "ETH (Gas) 余额偏低 (< 0.001 ETH)，建议充值至少 0.002 ETH 避免上链交易失败";
-      } else if (usdgNum < 10) {
-        warning = "USDG (本金) 余额偏低 (< 10 USDG)，建议充值至少 50 USDG 以满足单池做市要求";
+        const bscUsdtRaw = await this.bscClient.readContract({
+          address: PANCAKE_V3_BSC.USDT as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [addr],
+        });
+        // USDT on BSC has 18 decimals
+        bscUsdtFormatted = (Number(bscUsdtRaw) / 1e18).toFixed(2);
+      } catch (err: any) {
+        console.warn("[LpService] 查询 BSC 余额失败:", err?.message || err);
       }
+    })();
 
-      this.cachedWalletStatus = {
-        hasWallet: true,
-        walletAddress: addr,
-        ethBalance: ethFormatted,
-        usdgBalance: usdgFormatted,
-        isReadyForLive: isReady,
-        warning,
-        lastCheckedAt: new Date().toISOString(),
-      };
-    } catch (err: any) {
-      console.warn("[LpService] 刷新钱包余额网络错误:", err?.message || err);
-      if (this.cachedWalletStatus) {
-        this.cachedWalletStatus.warning = "RPC 查询余额超时，请稍后重试";
-        this.cachedWalletStatus.ethBalance = this.cachedWalletStatus.ethBalance || "0.0000";
-        this.cachedWalletStatus.usdgBalance = this.cachedWalletStatus.usdgBalance || "0.00";
+    // 3. Arbitrum Balances (ETH & USDC)
+    const arbPromise = (async () => {
+      try {
+        const arbEthBalRaw = await this.arbClient.getBalance({ address: addr });
+        arbEthFormatted = (Number(arbEthBalRaw) / 1e18).toFixed(4);
+
+        const arbUsdcRaw = await this.arbClient.readContract({
+          address: UNISWAP_V3_ARBITRUM.USDC as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [addr],
+        });
+        // USDC on Arbitrum has 6 decimals
+        arbUsdcFormatted = (Number(arbUsdcRaw) / 1e6).toFixed(2);
+      } catch (err: any) {
+        console.warn("[LpService] 查询 Arbitrum 余额失败:", err?.message || err);
       }
+    })();
+
+    await Promise.allSettled([rhPromise, bscPromise, arbPromise]);
+
+    const ethNum = Number(ethFormatted);
+    const usdgNum = Number(usdgFormatted);
+    const bnbNum = Number(bnbFormatted);
+    const bscUsdtNum = Number(bscUsdtFormatted);
+    const arbEthNum = Number(arbEthFormatted);
+    const arbUsdcNum = Number(arbUsdcFormatted);
+
+    const isReady =
+      (ethNum >= 0.0005 && usdgNum >= 10) ||
+      (bnbNum >= 0.001 && bscUsdtNum >= 10) ||
+      (arbEthNum >= 0.0005 && arbUsdcNum >= 10);
+
+    let warning: string | undefined = undefined;
+    if (ethNum < 0.0005 && bnbNum < 0.001 && arbEthNum < 0.0005) {
+      warning = "Gas 余额偏低，请在相应链上充值 Gas 费以支持实盘做市";
     }
+
+    this.cachedWalletStatus = {
+      hasWallet: true,
+      walletAddress: addr,
+      ethBalance: ethFormatted,
+      usdgBalance: usdgFormatted,
+      bnbBalance: bnbFormatted,
+      bscUsdtBalance: bscUsdtFormatted,
+      arbEthBalance: arbEthFormatted,
+      arbUsdcBalance: arbUsdcFormatted,
+      isReadyForLive: isReady,
+      warning,
+      lastCheckedAt: new Date().toISOString(),
+    };
 
     return this.cachedWalletStatus;
   }
@@ -891,7 +977,9 @@ export class LpService {
     tokenAddress: string;
     symbol: string;
     name?: string;
-    chain: string;
+    chain?: string;
+    protocol?: string;
+    barkerUrl?: string;
     pairAddress?: string;
     feeTier?: number;
     priceUsd: number;
@@ -914,6 +1002,25 @@ export class LpService {
     const capitalInvested =
       params.customCapitalUsd ||
       (isRwa ? this.config.rwaCapitalUsd : this.config.capitalPerPoolUsd);
+
+    // Normalize target chain
+    let targetChain = (params.chain || "robinhood").toLowerCase();
+    if (targetChain.includes("bsc") || targetChain.includes("binance")) {
+      targetChain = "bsc";
+    } else if (targetChain.includes("arb") || targetChain.includes("arc")) {
+      targetChain = "arbitrum";
+    } else {
+      targetChain = "robinhood";
+    }
+
+    let targetProtocol = params.protocol;
+    if (!targetProtocol) {
+      if (targetChain === "bsc") targetProtocol = "pancake_v3";
+      else if (targetChain === "arbitrum") targetProtocol = "uniswap_v3";
+      else targetProtocol = "uniswap_v3";
+    }
+
+    let barkerUrl = params.barkerUrl;
 
     const feeTier = params.feeTier || this.config.preferredFeeTier;
     const tickSpacing = feeTier >= 20000 ? 500 : 200;
@@ -939,26 +1046,53 @@ export class LpService {
         liveExecutionReason = "未绑定实盘私钥，自动降级为模拟测算";
         console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
       } else {
-        // Check real on-chain balances
+        // Check real on-chain balances per chain
         try {
           const status = await this.refreshWalletBalances();
-          const ethNum = Number(status.ethBalance || "0");
-          const usdgNum = Number(status.usdgBalance || "0");
-          if (ethNum < 0.0005) {
-            const msg = `Gas ETH 不足 (${status.ethBalance} < 0.0005 ETH)，无法支付链上 Gas 费`;
-            if (params.dryRun === false) throw new Error(msg);
-            isDryRun = true;
-            liveExecutionReason = `${msg}，自动降级为模拟测算`;
-            console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
-          } else if (usdgNum < capitalInvested) {
-            const msg = `USDG 本金不足 ($${status.usdgBalance} < $${capitalInvested.toFixed(2)})`;
-            if (params.dryRun === false) throw new Error(msg);
-            isDryRun = true;
-            liveExecutionReason = `${msg}，自动降级为模拟测算`;
-            console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+          if (targetChain === "robinhood") {
+            const ethNum = Number(status.ethBalance || "0");
+            const usdgNum = Number(status.usdgBalance || "0");
+            if (ethNum < 0.0005) {
+              const msg = `Robinhood Gas ETH 不足 (${status.ethBalance} < 0.0005 ETH)，无法支付链上 Gas 费`;
+              isDryRun = true;
+              liveExecutionReason = `${msg}，自动降级为模拟测算`;
+              console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+            } else if (usdgNum < capitalInvested) {
+              const msg = `Robinhood USDG 本金不足 ($${status.usdgBalance} < $${capitalInvested.toFixed(2)})`;
+              isDryRun = true;
+              liveExecutionReason = `${msg}，自动降级为模拟测算`;
+              console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+            }
+          } else if (targetChain === "bsc") {
+            const bnbNum = Number(status.bnbBalance || "0");
+            const usdtNum = Number(status.bscUsdtBalance || "0");
+            if (bnbNum < 0.001) {
+              const msg = `BSC Gas BNB 不足 (${status.bnbBalance} < 0.001 BNB)，已自动转为模拟测算做市`;
+              isDryRun = true;
+              liveExecutionReason = msg;
+              console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+            } else if (usdtNum < capitalInvested) {
+              const msg = `BSC USDT 本金不足 ($${status.bscUsdtBalance} < $${capitalInvested.toFixed(2)})，已自动转为模拟测算做市`;
+              isDryRun = true;
+              liveExecutionReason = msg;
+              console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+            }
+          } else if (targetChain === "arbitrum") {
+            const arbEthNum = Number(status.arbEthBalance || "0");
+            const arbUsdcNum = Number(status.arbUsdcBalance || "0");
+            if (arbEthNum < 0.0005) {
+              const msg = `Arbitrum Gas ETH 不足 (${status.arbEthBalance} < 0.0005 ETH)，已自动转为模拟测算做市`;
+              isDryRun = true;
+              liveExecutionReason = msg;
+              console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+            } else if (arbUsdcNum < capitalInvested) {
+              const msg = `Arbitrum USDC 本金不足 ($${status.arbUsdcBalance} < $${capitalInvested.toFixed(2)})，已自动转为模拟测算做市`;
+              isDryRun = true;
+              liveExecutionReason = msg;
+              console.warn(`[LpService] ⚠️ ${liveExecutionReason}`);
+            }
           }
         } catch (balErr: any) {
-          if (params.dryRun === false) throw balErr;
           isDryRun = true;
           liveExecutionReason = `链上余额核验超时 (${balErr?.message})，自动降级为模拟测算`;
         }
@@ -968,18 +1102,42 @@ export class LpService {
       if (!isDryRun && this.rawPrivateKey) {
         try {
           const account = privateKeyToAccount(this.rawPrivateKey as `0x${string}`);
-          const wallet = createWalletClient({
+
+          let walletChain: any = robinhoodChain;
+          let walletTransport = rpcTransport;
+          let activeClient: any = this.rhClient;
+          let npmAddress: `0x${string}` = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
+          let factoryAddress: `0x${string}` = UNISWAP_V3_ROBINHOOD.FACTORY as `0x${string}`;
+          let quoteAddress: `0x${string}` = USDG as `0x${string}`;
+          let quoteDecimals = 6;
+
+          if (targetChain === "bsc") {
+            walletChain = bsc;
+            walletTransport = bscTransport;
+            activeClient = this.bscClient;
+            npmAddress = PANCAKE_V3_BSC.NPM as `0x${string}`;
+            factoryAddress = PANCAKE_V3_BSC.FACTORY as `0x${string}`;
+            quoteAddress = PANCAKE_V3_BSC.USDT as `0x${string}`;
+            quoteDecimals = 18;
+          } else if (targetChain === "arbitrum") {
+            walletChain = arbitrum;
+            walletTransport = arbTransport;
+            activeClient = this.arbClient;
+            npmAddress = UNISWAP_V3_ARBITRUM.NPM as `0x${string}`;
+            factoryAddress = UNISWAP_V3_ARBITRUM.FACTORY as `0x${string}`;
+            quoteAddress = UNISWAP_V3_ARBITRUM.USDC as `0x${string}`;
+            quoteDecimals = 6;
+          }
+
+          const wallet: any = createWalletClient({
             account,
-            chain: robinhoodChain,
-            transport: rpcTransport,
+            chain: walletChain,
+            transport: walletTransport,
           });
 
-          const npmAddress = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
-          const factoryAddress = UNISWAP_V3_ROBINHOOD.FACTORY as `0x${string}`;
-          const usdgAddress = USDG as `0x${string}`;
           const tokenAddress = params.tokenAddress as `0x${string}`;
 
-          // Check if pool exists on Uniswap V3 Factory
+          // Check if pool exists on Uniswap/Pancake V3 Factory
           const factoryAbi = parseAbi([
             "function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool)",
           ]);
@@ -993,17 +1151,17 @@ export class LpService {
             targetFee = 10000;
           }
 
-          // Try finding a valid V3 pool with USDG
+          // Try finding a valid V3 pool with quote token
           let activeV3Pool: `0x${string}` = "0x0000000000000000000000000000000000000000";
           let selectedFee = targetFee;
 
           for (const testFee of [targetFee, 10000, 3000, 500, 100]) {
             try {
-              const p = await this.rhClient.readContract({
+              const p = await activeClient.readContract({
                 address: factoryAddress,
                 abi: factoryAbi,
                 functionName: "getPool",
-                args: [tokenAddress, usdgAddress, testFee],
+                args: [tokenAddress, quoteAddress, testFee],
               });
               if (p && p !== "0x0000000000000000000000000000000000000000") {
                 activeV3Pool = p;
@@ -1017,17 +1175,16 @@ export class LpService {
             const v4Hint = params.pairAddress
               ? ` (当前主要在 Uniswap V4 / Barker 协议交易，PoolId: ${params.pairAddress.slice(0, 10)}...)`
               : "";
-            const msg = `标的 $${params.symbol} 尚未在 Uniswap V3 初始化做市池${v4Hint}。实盘做市仅支持 Uniswap V3 池，或在【模拟】标签下进行策略测算。`;
-            if (params.dryRun === false) {
-              throw new Error(msg);
-            } else {
-              isDryRun = true;
-              liveExecutionReason = msg;
-              console.warn(`[LpService] ⚠️ ${msg}`);
-            }
+            const msg = `标的 $${params.symbol} 尚未在 Uniswap V3 初始化做市池${v4Hint}。已自动转为模拟盘进行策略测算与非对称网格跟踪，未扣除链上资金。`;
+            // Safe fallback without throwing error!
+            isDryRun = true;
+            targetProtocol = "uniswap_v4_barker";
+            barkerUrl = params.barkerUrl || "https://app.barker.money/raid/robinhood";
+            liveExecutionReason = msg;
+            console.warn(`[LpService] ⚠️ ${msg}`);
           } else {
             // Read slot0 tick
-            const slot0 = await this.rhClient.readContract({
+            const slot0 = await activeClient.readContract({
               address: activeV3Pool,
               abi: poolAbi,
               functionName: "slot0",
@@ -1037,45 +1194,43 @@ export class LpService {
               selectedFee === 100 ? 1 : selectedFee === 500 ? 10 : selectedFee === 3000 ? 60 : 200;
 
             // Sort tokens
-            const isToken0 = tokenAddress.toLowerCase() < usdgAddress.toLowerCase();
-            const token0 = isToken0 ? tokenAddress : usdgAddress;
-            const token1 = isToken0 ? usdgAddress : tokenAddress;
+            const isToken0 = tokenAddress.toLowerCase() < quoteAddress.toLowerCase();
+            const token0 = isToken0 ? tokenAddress : quoteAddress;
+            const token1 = isToken0 ? quoteAddress : tokenAddress;
 
-            // Approve USDG if needed
-            const capitalWei = BigInt(Math.floor(capitalInvested * 1e6));
-            const currentAllowance = await this.rhClient.readContract({
-              address: usdgAddress,
+            // Approve quoteToken if needed
+            const capitalWei = BigInt(Math.floor(capitalInvested * 10 ** quoteDecimals));
+            const currentAllowance = await activeClient.readContract({
+              address: quoteAddress,
               abi: ERC20_ABI,
               functionName: "allowance",
               args: [account.address, npmAddress],
             });
 
             if (currentAllowance < capitalWei) {
-              console.log(`[LpService] 🔑 授权 USDG 给 Uniswap V3 PositionManager...`);
+              console.log(`[LpService] 🔑 授权本金代币给 PositionManager (${npmAddress})...`);
               const approveHash = await wallet.writeContract({
-                address: usdgAddress,
+                address: quoteAddress,
                 abi: ERC20_ABI,
                 functionName: "approve",
                 args: [npmAddress, 2n ** 256n - 1n],
               });
-              await this.rhClient.waitForTransactionReceipt({ hash: approveHash });
-              console.log(`[LpService] ✅ USDG 授权成功: ${approveHash}`);
+              await activeClient.waitForTransactionReceipt({ hash: approveHash });
+              console.log(`[LpService] ✅ 本金授权成功: ${approveHash}`);
             }
 
-            // Single-sided USDG range order (below current price)
+            // Single-sided range order (below current price)
             let tickLower: number;
             let tickUpper: number;
             let amount0Desired: bigint;
             let amount1Desired: bigint;
 
-            if (token1.toLowerCase() === usdgAddress.toLowerCase()) {
-              // token1 is USDG: tickUpper <= currentTick
+            if (token1.toLowerCase() === quoteAddress.toLowerCase()) {
               tickLower = Math.floor((currentTick - 1000) / tickSpacing) * tickSpacing;
               tickUpper = Math.floor((currentTick - 200) / tickSpacing) * tickSpacing;
               amount0Desired = 0n;
               amount1Desired = capitalWei;
             } else {
-              // token0 is USDG: tickLower >= currentTick
               tickLower = Math.ceil((currentTick + 200) / tickSpacing) * tickSpacing;
               tickUpper = Math.ceil((currentTick + 1000) / tickSpacing) * tickSpacing;
               amount0Desired = capitalWei;
@@ -1084,7 +1239,7 @@ export class LpService {
 
             const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
 
-            console.log(`[LpService] 🚀 正在向 Uniswap V3 NPM 发起上链铸造 LP 头寸: $${params.symbol}...`);
+            console.log(`[LpService] 🚀 正在向 ${targetChain.toUpperCase()} NPM 发起上链铸造 LP 头寸: $${params.symbol}...`);
             const mintHash = await wallet.writeContract({
               address: npmAddress,
               abi: POSITION_MANAGER_ABI,
@@ -1107,12 +1262,12 @@ export class LpService {
             });
 
             console.log(`[LpService] ⏳ 交易已广播: ${mintHash}，等待链上确认...`);
-            const receipt = await this.rhClient.waitForTransactionReceipt({ hash: mintHash });
+            const receipt = await activeClient.waitForTransactionReceipt({ hash: mintHash });
             if (receipt.status === "success") {
               onChainTxHash = mintHash;
               // Extract tokenId from Transfer event logs
               const transferLog = receipt.logs.find(
-                (l) =>
+                (l: any) =>
                   l.address.toLowerCase() === npmAddress.toLowerCase() &&
                   l.topics[0] === "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef" &&
                   l.topics.length === 4,
@@ -1126,10 +1281,6 @@ export class LpService {
             }
           }
         } catch (err: any) {
-          if (params.dryRun === false) {
-            // User explicitly requested real on-chain execution, throw the failure so UI surfaces it!
-            throw new Error(`真实链上做市未完成: ${err.shortMessage || err.message}`);
-          }
           isDryRun = true;
           liveExecutionReason = `链上做市未能完成 (${err.shortMessage || err.message})，为保护资金安全已转为模拟测算`;
           console.warn(`[LpService] ⚠️ 真实上链未成功，安全降级模拟:`, err?.message || err);
@@ -1159,8 +1310,8 @@ export class LpService {
       type: "MINT_LP",
       timestamp: new Date().toISOString(),
       details: onChainTxHash
-        ? `[真实链上] 成功创建 V3 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, Tx: ${onChainTxHash}`
-        : `创建 V4 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)} USDG, 乘数: ${capitalEfficiency.toFixed(1)}x${liveExecutionReason ? ` (${liveExecutionReason})` : ""}`,
+        ? `[真实链上] 成功在 ${targetChain.toUpperCase()} 创建 V3 集中做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}): 资金 $${capitalInvested.toFixed(2)}, Tx: ${onChainTxHash}`
+        : `创建做市头寸 (${stage}${isRwa ? " · 美股RWA" : ""}, 链: ${targetChain}): 资金 $${capitalInvested.toFixed(2)}, 乘数: ${capitalEfficiency.toFixed(1)}x${liveExecutionReason ? ` (${liveExecutionReason})` : ""}`,
       amountUsd: capitalInvested,
       dryRun: isDryRun,
       status: "CONFIRMED",
@@ -1171,7 +1322,9 @@ export class LpService {
       tokenAddress: params.tokenAddress,
       symbol: params.symbol,
       name: params.name || rwaMatch.stockName,
-      chain: params.chain,
+      chain: targetChain,
+      protocol: targetProtocol,
+      barkerUrl,
       pairAddress: params.pairAddress,
       feeTier,
       stage,
@@ -1210,7 +1363,7 @@ export class LpService {
     this.saveToStorage();
 
     console.log(
-      `🌊 [LpService] 建立集中做市头寸: $${params.symbol} (${stage}, 属性: ${category}, 模式: ${isDryRun ? "模拟" : "实盘"}), 资金: $${capitalInvested.toFixed(2)} USDG, 日费率预估: ${dailyFeeRatePct.toFixed(1)}%/天`,
+      `🌊 [LpService] 建立集中做市头寸: $${params.symbol} (${stage}, 链: ${targetChain}, 协议: ${targetProtocol || "V3"}, 模式: ${isDryRun ? "模拟" : "实盘"}), 资金: $${capitalInvested.toFixed(2)}, 日费率预估: ${dailyFeeRatePct.toFixed(1)}%/天`,
     );
 
     if (this.config.larkNotification) {
@@ -1507,15 +1660,34 @@ export class LpService {
       try {
         console.log(`[LpService] 🚀 正在向 Uniswap V3 发起链上撤池提取: NFT #${pos.tokenId}...`);
         const account = privateKeyToAccount(this.rawPrivateKey as `0x${string}`);
-        const wallet = createWalletClient({
+
+        let walletChain: any = robinhoodChain;
+        let walletTransport = rpcTransport;
+        let activeClient: any = this.rhClient;
+        let npmAddress: `0x${string}` = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
+
+        if (pos.chain === "bsc") {
+          walletChain = bsc;
+          walletTransport = bscTransport;
+          activeClient = this.bscClient;
+          npmAddress = PANCAKE_V3_BSC.NPM as `0x${string}`;
+        } else if (pos.chain === "arbitrum") {
+          walletChain = arbitrum;
+          walletTransport = arbTransport;
+          activeClient = this.arbClient;
+          npmAddress = UNISWAP_V3_ARBITRUM.NPM as `0x${string}`;
+        }
+
+        console.log(`[LpService] 🚀 正在向 ${pos.chain?.toUpperCase() || "ROBINHOOD"} NPM 发起链上撤池提取: NFT #${pos.tokenId}...`);
+
+        const wallet: any = createWalletClient({
           account,
-          chain: robinhoodChain,
-          transport: rpcTransport,
+          chain: walletChain,
+          transport: walletTransport,
         });
-        const npmAddress = UNISWAP_V3_ROBINHOOD.NPM as `0x${string}`;
         const tokenIdBig = BigInt(pos.tokenId);
 
-        const onChainPos = await this.rhClient.readContract({
+        const onChainPos = await activeClient.readContract({
           address: npmAddress,
           abi: POSITION_MANAGER_ABI,
           functionName: "positions",
@@ -1538,7 +1710,7 @@ export class LpService {
             }],
           });
           console.log(`[LpService] ⏳ decreaseLiquidity 等待链上确认: ${decHash}...`);
-          await this.rhClient.waitForTransactionReceipt({ hash: decHash });
+          await activeClient.waitForTransactionReceipt({ hash: decHash });
           console.log(`[LpService] ✅ 成功撤回链上流动性: ${decHash}`);
         }
 
@@ -1555,7 +1727,7 @@ export class LpService {
           }],
         });
         console.log(`[LpService] ⏳ collect 等待链上确认: ${colHash}...`);
-        await this.rhClient.waitForTransactionReceipt({ hash: colHash });
+        await activeClient.waitForTransactionReceipt({ hash: colHash });
         console.log(`[LpService] ✅ 成功提取本金与手续费至钱包: ${colHash}`);
         onChainCloseTx = colHash;
 
