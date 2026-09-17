@@ -37,6 +37,7 @@ import {
   PANCAKE_V3_BSC,
   UNISWAP_V3_ARBITRUM,
 } from "./constants";
+import { isArgusSignal, shouldArmLpFromTape } from "./fomo-ladder";
 import { bsc, arbitrum } from "viem/chains";
 
 // Robinhood Chain definition
@@ -905,6 +906,15 @@ export class LpService {
   }): Promise<LpPosition | null> {
     if (!this.config.autoLpEnabled) return null;
 
+    if (isArgusSignal({ chain: params.chain })) {
+      console.log(`[LpService] skip Argus/ARC $${params.symbol} — no Robinhood LP venue`);
+      return null;
+    }
+    if (!shouldArmLpFromTape(params.tokenAddress, params.chain)) {
+      console.log(`[LpService] skip $${params.symbol} — FOMO tape do not arm`);
+      return null;
+    }
+
     // Check pool limit
     if (this.activePositions.size >= this.config.maxActivePools) {
       console.log("[LpService] 活跃做市池已达上限，跳过信号");
@@ -1015,9 +1025,12 @@ export class LpService {
 
     // Normalize target chain
     let targetChain = (params.chain || "robinhood").toLowerCase();
+    if (targetChain.includes("argus")) {
+      throw new Error("Argus/ARC is not a Robinhood LP venue");
+    }
     if (targetChain.includes("bsc") || targetChain.includes("binance")) {
       targetChain = "bsc";
-    } else if (targetChain.includes("arb") || targetChain.includes("arc")) {
+    } else if (targetChain.includes("arbitrum") || targetChain === "arb" || targetChain === "arc") {
       targetChain = "arbitrum";
     } else {
       targetChain = "robinhood";

@@ -72,6 +72,7 @@ export type Candidate = {
   hardPassed: number;
   reasons: string[];
   indicators?: MemeIndicators;
+  fomo?: FomoTapeSnapshot | null;
 };
 
 export type ScanMeta = {
@@ -92,6 +93,7 @@ export type ScanResult = {
   alerts: Candidate[];
   late: Candidate[];
   skipped: Candidate[];
+  fomoEvents: FomoTapeSnapshot[];
 };
 
 export type InspectInput = { address: string };
@@ -159,6 +161,25 @@ export type TgChannelConfig = {
   username: string; // e.g. "lanniaohui"
   name?: string;     // e.g. "Bluebird 监控频道🕊️"
   enabled: boolean;
+  /** Group channels with no public t.me/s archive (e.g. bobo9527). */
+  webhookOnly?: boolean;
+};
+
+/** bobo MC-ladder FOMO tape: first print = inventory, shrinking 跟推 + rising vol = FOMO. */
+export type FomoKind = "inventory" | "fomo" | "toxic" | "late" | "observe";
+
+export type FomoTapeSnapshot = {
+  channel: string;
+  ca: string;
+  pushIndex: number;
+  intervalMin?: number;
+  vol5m?: number;
+  top10?: number;
+  phish?: number;
+  bundle?: number;
+  kind: FomoKind;
+  armLp: boolean;
+  reason: string;
 };
 
 export type TgMessageParsed = {
@@ -180,6 +201,11 @@ export type TgMessageParsed = {
   volume5mUsd?: number;
   top10Pct?: number;
   platform?: string;
+  pushIndex?: number;
+  intervalMin?: number;
+  phishPct?: number;
+  bundlePct?: number;
+  fomo?: FomoTapeSnapshot;
   narrative?: string;
   tweetUrl?: string;
   timestamp: string;

@@ -19,6 +19,19 @@ import type {
   TgTokenEvaluation,
 } from "./types";
 
+import {
+  applyFomoTape,
+  isRobinhoodLpTarget,
+  isWebhookOnlyChannel,
+  parseBundlePct,
+  parseIntervalMin,
+  parsePhishPct,
+  parsePushIndex,
+  parseVol5mUsd,
+  resolveSignalChain,
+  shouldArmLpFromTape,
+} from "./fomo-ladder";
+
 export const DEFAULT_TG_CHANNELS: TgChannelConfig[] = [
   {
     username: "bobo8567",
@@ -33,6 +46,12 @@ export const DEFAULT_TG_CHANNELS: TgChannelConfig[] = [
   {
     username: "bobo9527",
     name: "BSC 监控频道⚡",
+    enabled: true,
+    webhookOnly: true,
+  },
+  {
+    username: "bobo9632",
+    name: "ARC/Argus 监控频道",
     enabled: true,
   },
 ];
@@ -206,9 +225,12 @@ export class TelegramChannelMonitor {
     let newAlarmsCount = 0;
 
     const enabledChannels = this.config.channels.filter((c) => c.enabled);
+    const pollableChannels = enabledChannels.filter(
+      (c) => !isWebhookOnlyChannel(c.username, c.webhookOnly),
+    );
 
     try {
-      for (const ch of enabledChannels) {
+      for (const ch of pollableChannels) {
         const posts = await fetchChannelMessages(ch.username);
         for (const post of posts) {
           if (this.processedPostIds.has(post.postId)) {
@@ -340,15 +362,15 @@ export class TelegramChannelMonitor {
             console.warn("[TgMonitor] 自动买入执行异常:", err?.message || err);
           });
 
-          // Trigger Automated LP Market Maker Engine (if on Robinhood Chain)
-          const isRobinhood =
-            post.chain.toLowerCase().includes("robinhood") ||
-            post.channel.toLowerCase() === "bobo8567" ||
-            evalResult.token.chain.toLowerCase().includes("robinhood") ||
-            Boolean(evalResult.liveData?.dexUrl?.includes("/robinhood/")) ||
-            Boolean(post.platform && (post.platform.includes("Pons") || post.platform.includes("Barker")));
+          // Trigger Automated LP Market Maker Engine (RH only; Argus ≠ Robinhood; toxic/FOMO follow-up do not arm)
+          const isRobinhood = isRobinhoodLpTarget({
+            chain: post.chain,
+            channel: post.channel,
+            platform: post.platform,
+            dexUrl: evalResult.liveData?.dexUrl,
+          });
 
-          if (isRobinhood) {
+          if (isRobinhood && shouldArmLpFromTape(post.address, post.chain, post.channel)) {
             lpService.handleTokenAlert({
               tokenAddress: post.address,
               symbol: post.symbol,
@@ -372,7 +394,7 @@ export class TelegramChannelMonitor {
 
       if (newAlarmsCount > 0 || newMessagesCount > 0) {
         console.log(
-          `[TgMonitor] 📡 巡检完成: 检查 ${enabledChannels.length} 个TG频道, 检出 ${newMessagesCount} 条新情报, 研判 ${evaluatedCount} 个代币, 推送 ${newAlarmsCount} 条告警`,
+          `[TgMonitor] 📡 巡检完成: 检查 ${pollableChannels.length} 个TG频道, 检出 ${newMessagesCount} 条新情报, 研判 ${evaluatedCount} 个代币, 推送 ${newAlarmsCount} 条告警`,
         );
       }
     } catch (err: any) {
@@ -382,7 +404,7 @@ export class TelegramChannelMonitor {
     }
 
     return {
-      polledChannels: enabledChannels.length,
+      polledChannels: pollableChannels.length,
       newMessagesCount,
       evaluatedCount,
       newAlarmsCount,
@@ -545,15 +567,15 @@ export class TelegramChannelMonitor {
       console.warn("[TgWebhook] 自动买入执行异常:", err?.message || err);
     });
 
-    // Trigger Automated LP Market Maker Engine
-    const isRobinhood =
-      post.chain.toLowerCase().includes("robinhood") ||
-      post.channel.toLowerCase() === "bobo8567" ||
-      evalResult.token.chain.toLowerCase().includes("robinhood") ||
-      Boolean(evalResult.liveData?.dexUrl?.includes("/robinhood/")) ||
-      Boolean(post.platform && (post.platform.includes("Pons") || post.platform.includes("Barker")));
+    // Trigger Automated LP Market Maker Engine (RH only; Argus ≠ Robinhood; toxic/FOMO follow-up do not arm)
+    const isRobinhood = isRobinhoodLpTarget({
+      chain: post.chain,
+      channel: post.channel,
+      platform: post.platform,
+      dexUrl: evalResult.liveData?.dexUrl,
+    });
 
-    if (isRobinhood) {
+    if (isRobinhood && shouldArmLpFromTape(post.address, post.chain, post.channel)) {
       lpService.handleTokenAlert({
         tokenAddress: post.address,
         symbol: post.symbol,
@@ -633,7 +655,11 @@ export class TelegramChannelMonitor {
           if (p.baseToken?.name && !token.name) {
             token.name = p.baseToken.name;
           }
-          if (p.chainId === "robinhood") {
+          if (p.chainId === "robinhood" && isRobinhoodLpTarget({
+            chain: token.chain,
+            channel: token.channel,
+            platform: token.platform,
+          })) {
             token.chain = "Robinhood Chain";
           }
         }
@@ -822,11 +848,37 @@ export class TelegramChannelMonitor {
     else if (totalScore >= 65) potentialTier = "A";
     else if (totalScore >= 50) potentialTier = "B";
 
+    const fomo = applyFomoTape({
+      channel: token.channel,
+      ca: token.address,
+      pushIndex: token.pushIndex,
+      intervalMin: token.intervalMin,
+      vol5m: token.volume5mUsd,
+      top10: token.top10Pct,
+      phish: token.phishPct,
+      bundle: token.bundlePct,
+      timestamp: token.timestamp,
+      rawText: token.rawText,
+      chain: token.chain,
+      platform: token.platform,
+    });
+    token.fomo = fomo;
+    if (fomo.kind === "inventory") {
+      signals.push("FOMO tape: first print (pre-crowd inventory)");
+    } else if (fomo.kind === "fomo") {
+      signals.push("FOMO tape: shrinking 跟推 + rising 5m vol");
+    } else if (fomo.kind === "toxic") {
+      risks.push(fomo.reason);
+    }
+
     // Filtering evaluation
     let passedFilter = true;
     let filterReason = "";
 
-    if (totalScore < this.config.minScoreThreshold) {
+    if (fomo.kind === "toxic") {
+      passedFilter = false;
+      filterReason = fomo.reason;
+    } else if (totalScore < this.config.minScoreThreshold) {
       passedFilter = false;
       filterReason = `综合评分未达标 (${totalScore} < ${this.config.minScoreThreshold})`;
     } else if (liqUsd < this.config.minLiquidityUsd) {
@@ -969,35 +1021,19 @@ export function parseTelegramPostText(
   const platform = platformMatch ? platformMatch[1].replace(/[🚀🔥\s]/g, "").trim() : undefined;
 
   const chainMatch = cleanText.match(/链[\s:：]*([^\n]+)/);
-  let chain = chainMatch ? chainMatch[1].trim() : "";
+  const chain = resolveSignalChain({
+    channel: channelUsername,
+    platform,
+    chainText: chainMatch ? chainMatch[1].trim() : "",
+    address,
+  });
 
-  if (!chain) {
-    if (platform && (platform.toLowerCase().includes("pons") || platform.toLowerCase().includes("barker"))) {
-      chain = "Robinhood Chain";
-    } else if (channelUsername.toLowerCase().includes("bobo8567")) {
-      chain = "Robinhood Chain";
-    } else if (channelUsername.toLowerCase().includes("bobo9527")) {
-      chain = "BSC";
-    } else if (address.startsWith("0x")) {
-      chain = "Robinhood Chain";
-    } else {
-      chain = "Solana";
-    }
-  }
-
-  // 4. 5m Volume
-  let volume5mUsd: number | undefined = undefined;
-  const vol5mMatch = cleanText.match(/5\s*分钟交易量[\s:：]*\$?([0-9.,]+)\s*([KkMmBb])?/i);
-  if (vol5mMatch) {
-    const num = parseFloat(vol5mMatch[1].replace(/,/g, ""));
-    const unit = (vol5mMatch[2] || "").toUpperCase();
-    if (!isNaN(num)) {
-      if (unit === "K") volume5mUsd = num * 1_000;
-      else if (unit === "M") volume5mUsd = num * 1_000_000;
-      else if (unit === "B") volume5mUsd = num * 1_000_000_000;
-      else volume5mUsd = num;
-    }
-  }
+  // 4. 5m Volume + MC-ladder FOMO tuple
+  const volume5mUsd = parseVol5mUsd(cleanText);
+  const pushIndex = parsePushIndex(cleanText);
+  const intervalMin = parseIntervalMin(cleanText);
+  const phishPct = parsePhishPct(cleanText);
+  const bundlePct = parseBundlePct(cleanText);
 
   // 5. MC
   const mcapMatch = cleanText.match(/(?:起推)?市值[\s:：]*([^\n]+)/);
@@ -1080,6 +1116,10 @@ export function parseTelegramPostText(
     fomoCount,
     tgSafety,
     tweetUrl,
+    pushIndex,
+    intervalMin,
+    phishPct,
+    bundlePct,
     timestamp: timestamp || new Date().toISOString(),
     rawText: cleanText,
   };

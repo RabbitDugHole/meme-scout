@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatTgMemeAlarmText } from "./lark.ts";
-import { cleanChannelUsername, parseTelegramWebHtml, parseTelegramPostText, tgMonitorService } from "./tg-monitor.server.ts";
+import { cleanChannelUsername, parseTelegramWebHtml, parseTelegramPostText, tgMonitorService, DEFAULT_TG_CHANNELS } from "./tg-monitor.server.ts";
 import { tradeService } from "./trade.server.ts";
 import { lpService } from "./lp.server.ts";
 import { backtestEngine } from "./backtest.server.ts";
@@ -13,6 +13,13 @@ test("cleanChannelUsername should normalize URLs and usernames", () => {
   assert.equal(cleanChannelUsername("https://t.me/lanniaohui"), "lanniaohui");
   assert.equal(cleanChannelUsername("https://t.me/s/lanniaohui"), "lanniaohui");
   assert.equal(cleanChannelUsername("https://t.me/lanniaohui?param=1"), "lanniaohui");
+});
+
+test("default TG channels include ARC bobo9632 and webhook-only bobo9527", () => {
+  const usernames = DEFAULT_TG_CHANNELS.map((c) => c.username);
+  assert.ok(usernames.includes("bobo9632"));
+  const bsc = DEFAULT_TG_CHANNELS.find((c) => c.username === "bobo9527");
+  assert.equal(bsc?.webhookOnly, true);
 });
 
 test("parseTelegramWebHtml should correctly parse post data from HTML", () => {
@@ -149,6 +156,9 @@ test("parseTelegramWebHtml should correctly parse bobo8567 Robinhood channel for
   assert.equal(item.address, "0x7d2c34f8be61ae93cce3d408007f73fb3a4e7cfb");
   assert.equal(item.volume5mUsd, 18080);
   assert.equal(item.top10Pct, 34.8);
+  assert.equal(item.pushIndex, 1);
+  assert.equal(item.phishPct, 0.2);
+  assert.equal(item.bundlePct, 0);
   assert.ok(item.tgSafety?.includes("正常"), "tgSafety should detect honeypot normal");
 });
 
@@ -175,6 +185,31 @@ test("parseTelegramPostText should parse raw text from litehook or bot push for 
   assert.equal(parsed.kolCount, 2);
   assert.equal(parsed.top10Pct, 28.5);
   assert.equal(parsed.channel, "bobo9527");
+});
+
+test("parseTelegramPostText maps bobo9632 Argus cards off Robinhood and reads FOMO ladder fields", () => {
+  const rawText = `
+🔥 【第三次推送】 🔥
+• 代币: Scout (SCOUT)
+• 平台: Argus
+• CA: 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+• 5分钟交易量: $40.2K
+• 跟推间隔: 12.5 分钟
+• Top 10 持仓占比: 28.1%
+• 钓鱼钱包: 1.1%
+• 老鼠仓偷跑比例: 2%
+  `.trim();
+
+  const parsed = parseTelegramPostText(rawText, "bobo9632", "bobo9632/12");
+  assert.ok(parsed);
+  assert.equal(parsed.chain, "Argus");
+  assert.equal(parsed.pushIndex, 3);
+  assert.equal(parsed.intervalMin, 12.5);
+  assert.equal(parsed.volume5mUsd, 40200);
+  assert.equal(parsed.top10Pct, 28.1);
+  assert.equal(parsed.phishPct, 1.1);
+  assert.equal(parsed.bundlePct, 2);
+  assert.equal(parsed.address, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 });
 
 test("tgMonitorService.ingestRawMessage should successfully process webhook message", async () => {

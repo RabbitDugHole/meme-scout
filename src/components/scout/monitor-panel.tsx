@@ -654,16 +654,24 @@ export function MonitorPanel({
                         </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        预览地址:{" "}
-                        <a
-                          href={`https://t.me/s/${ch.username}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-mono text-cyan-400 hover:underline inline-flex items-center gap-1"
-                        >
-                          https://t.me/s/{ch.username}
-                          <ExternalLink className="size-3" />
-                        </a>
+                        {ch.webhookOnly || ch.username.toLowerCase() === "bobo9527" ? (
+                          <>
+                            webhook-only (no public t.me/s feed)
+                          </>
+                        ) : (
+                          <>
+                            预览地址:{" "}
+                            <a
+                              href={`https://t.me/s/${ch.username}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-mono text-cyan-400 hover:underline inline-flex items-center gap-1"
+                            >
+                              https://t.me/s/{ch.username}
+                              <ExternalLink className="size-3" />
+                            </a>
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
