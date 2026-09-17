@@ -1,3 +1,4 @@
+# Dependencies
 node_modules
 dist
 .output
@@ -5,15 +6,39 @@ dist
 .tanstack
 .nitro
 .grok
+
+# OS & Logs
 .DS_Store
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Credentials (Wallets, Secrets, Keys)
 .env
 .env.*
 !.env.example
+.secrets*
+*.pem
+*.key
+*.keystore
+*.p12
+*.pfx
+*.pkcs12
+*wallet*.json
+*secret*.json
+*credential*.json
+*.seed
+*.mnemonic
+
+# Data Directory (Contains runtime positions, trade history, wallet keys)
+data/
+data/*
+
+# Testing & UI Artifacts
 screenshots
 artifacts
 attachments
 public/__grok
 routeTree.gen.ts
-data/
-
+scratch/
