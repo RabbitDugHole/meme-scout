@@ -378,6 +378,9 @@ export type TradeConfig = {
   maxHoldTimeMinutes: number; // default: 360 (6 hours)
   emergencyLiquidityDrainPct: number; // default: 35%
   larkTradeNotification: boolean;
+  larkTradeBuyEnabled?: boolean; // 买入成交提醒 (默认开启)
+  larkTradeSellEnabled?: boolean; // 止盈/止损平仓提醒 (默认开启)
+  larkTradeReportEnabled?: boolean; // 综合交易战报提醒 (默认开启)
   webhookUrl?: string;
   walletAddress?: string;
   hasBscKey: boolean;
@@ -534,6 +537,11 @@ export type LpConfig = {
   hotTokensCapitalUsd?: number; // default: 20 (每池做市资金)
 
   larkNotification: boolean;
+  larkLpOpenEnabled?: boolean; // 做市建仓提醒 (默认开启)
+  larkLpCollectEnabled?: boolean; // 穿上沿止盈/止损/保本提润提醒 (默认开启)
+  larkLpRebalanceEnabled?: boolean; // 智能移仓自愈提醒 (默认开启)
+  larkLpOpportunityEnabled?: boolean; // 高收益做市机会扫描提醒 (默认开启)
+  larkLpDailyReportEnabled?: boolean; // 每日综合做市日报 (默认开启)
   webhookUrl?: string;
   walletAddress?: string;
   hasRhKey: boolean;

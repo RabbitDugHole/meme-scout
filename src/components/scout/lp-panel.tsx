@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
+  Bell,
   CheckCircle2,
   Clock,
   Coins,
@@ -146,6 +147,14 @@ export function LpPanel({
   const [cfgEnableHotTokensLp, setCfgEnableHotTokensLp] = useState(true);
   const [cfgHotTokensCapital, setCfgHotTokensCapital] = useState(20);
 
+  // Granular Lark Notification Switches
+  const [cfgLarkNotification, setCfgLarkNotification] = useState(true);
+  const [cfgLarkLpOpen, setCfgLarkLpOpen] = useState(true);
+  const [cfgLarkLpCollect, setCfgLarkLpCollect] = useState(true);
+  const [cfgLarkLpRebalance, setCfgLarkLpRebalance] = useState(true);
+  const [cfgLarkLpOpportunity, setCfgLarkLpOpportunity] = useState(true);
+  const [cfgLarkLpDailyReport, setCfgLarkLpDailyReport] = useState(true);
+
   // Sync form state when config loads
   const [hasSynced, setHasSynced] = useState(false);
   if (config && !hasSynced) {
@@ -170,6 +179,12 @@ export function LpPanel({
     if (config.fastStopLossPct !== undefined) setCfgFastStopLossPct(config.fastStopLossPct);
     if (config.enableHotTokensLp !== undefined) setCfgEnableHotTokensLp(config.enableHotTokensLp);
     if (config.hotTokensCapitalUsd !== undefined) setCfgHotTokensCapital(config.hotTokensCapitalUsd);
+    if (config.larkNotification !== undefined) setCfgLarkNotification(config.larkNotification);
+    if (config.larkLpOpenEnabled !== undefined) setCfgLarkLpOpen(config.larkLpOpenEnabled);
+    if (config.larkLpCollectEnabled !== undefined) setCfgLarkLpCollect(config.larkLpCollectEnabled);
+    if (config.larkLpRebalanceEnabled !== undefined) setCfgLarkLpRebalance(config.larkLpRebalanceEnabled);
+    if (config.larkLpOpportunityEnabled !== undefined) setCfgLarkLpOpportunity(config.larkLpOpportunityEnabled);
+    if (config.larkLpDailyReportEnabled !== undefined) setCfgLarkLpDailyReport(config.larkLpDailyReportEnabled);
     setHasSynced(true);
   }
 
@@ -1038,6 +1053,83 @@ export function LpPanel({
               />
             </div>
 
+            {/* Lark Notification Settings */}
+            <div className="col-span-1 sm:col-span-2 md:col-span-3 pt-2 pb-1 border-t border-border/40">
+              <div className="flex items-center gap-2 mb-2">
+                <Bell className="size-4 text-primary" />
+                <span className="text-xs font-bold text-foreground">飞书告警与通知细粒度控制</span>
+                <span className="text-[10px] text-muted-foreground">(可针对建仓、撤池止盈、重平衡等独立启停)</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">总开关</label>
+                  <select
+                    className="bg-secondary/60 border border-border/60 rounded px-2 py-1 text-xs"
+                    value={cfgLarkNotification ? "true" : "false"}
+                    onChange={(e) => setCfgLarkNotification(e.target.value === "true")}
+                  >
+                    <option value="true">开启全部</option>
+                    <option value="false">静默模式</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">🚀 建仓提醒</label>
+                  <select
+                    className="bg-secondary/60 border border-border/60 rounded px-2 py-1 text-xs"
+                    value={cfgLarkLpOpen ? "true" : "false"}
+                    onChange={(e) => setCfgLarkLpOpen(e.target.value === "true")}
+                  >
+                    <option value="true">通知</option>
+                    <option value="false">关闭</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">💰 撤池止盈/止损</label>
+                  <select
+                    className="bg-secondary/60 border border-border/60 rounded px-2 py-1 text-xs"
+                    value={cfgLarkLpCollect ? "true" : "false"}
+                    onChange={(e) => setCfgLarkLpCollect(e.target.value === "true")}
+                  >
+                    <option value="true">通知</option>
+                    <option value="false">关闭</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">⚖️ 仓位重平衡</label>
+                  <select
+                    className="bg-secondary/60 border border-border/60 rounded px-2 py-1 text-xs"
+                    value={cfgLarkLpRebalance ? "true" : "false"}
+                    onChange={(e) => setCfgLarkLpRebalance(e.target.value === "true")}
+                  >
+                    <option value="true">通知</option>
+                    <option value="false">关闭</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">📡 机会雷达推送</label>
+                  <select
+                    className="bg-secondary/60 border border-border/60 rounded px-2 py-1 text-xs"
+                    value={cfgLarkLpOpportunity ? "true" : "false"}
+                    onChange={(e) => setCfgLarkLpOpportunity(e.target.value === "true")}
+                  >
+                    <option value="true">通知</option>
+                    <option value="false">关闭</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] text-muted-foreground">📊 综合日报推送</label>
+                  <select
+                    className="bg-secondary/60 border border-border/60 rounded px-2 py-1 text-xs"
+                    value={cfgLarkLpDailyReport ? "true" : "false"}
+                    onChange={(e) => setCfgLarkLpDailyReport(e.target.value === "true")}
+                  >
+                    <option value="true">通知</option>
+                    <option value="false">关闭</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             {/* Actions */}
             <div className="flex items-end gap-2 col-span-1 sm:col-span-2 md:col-span-3">
               <Button
@@ -1065,6 +1157,12 @@ export function LpPanel({
                     fastStopLossPct: cfgFastStopLossPct,
                     enableHotTokensLp: cfgEnableHotTokensLp,
                     hotTokensCapitalUsd: cfgHotTokensCapital,
+                    larkNotification: cfgLarkNotification,
+                    larkLpOpenEnabled: cfgLarkLpOpen,
+                    larkLpCollectEnabled: cfgLarkLpCollect,
+                    larkLpRebalanceEnabled: cfgLarkLpRebalance,
+                    larkLpOpportunityEnabled: cfgLarkLpOpportunity,
+                    larkLpDailyReportEnabled: cfgLarkLpDailyReport,
                   })
                 }
                 disabled={updateConfigMut.isPending}

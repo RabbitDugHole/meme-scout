@@ -118,7 +118,7 @@ export class V4PoolRadarService {
               `🔥 [V4PoolRadar] 捕获高收益做市机会: ${pool.pairName} | 日费率: +${pool.dailyFeeRatePct.toFixed(1)}%/天 | 2H成交: $${pool.volume2hUsd.toLocaleString()}`,
             );
 
-            if (lpConfig.larkNotification) {
+            if (lpConfig.larkNotification && (lpConfig.larkLpOpportunityEnabled !== false)) {
               sendLarkLpOpportunityAlert({
                 pool,
                 webhookUrl: lpConfig.webhookUrl,

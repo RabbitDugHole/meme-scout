@@ -169,6 +169,11 @@ export class LpService {
     hotTokensCapitalUsd: 20,
 
     larkNotification: true,
+    larkLpOpenEnabled: true,
+    larkLpCollectEnabled: true,
+    larkLpRebalanceEnabled: true,
+    larkLpOpportunityEnabled: true,
+    larkLpDailyReportEnabled: true,
     webhookUrl: DEFAULT_LARK_WEBHOOK_URL,
     walletAddress: undefined,
     hasRhKey: false,
@@ -1468,7 +1473,7 @@ export class LpService {
       `🌊 [LpService] 建立集中做市头寸: $${params.symbol} (${stage}, 链: ${targetChain}, 协议: ${targetProtocol || "V3"}, 模式: ${isDryRun ? "模拟" : "实盘"}), 资金: $${capitalInvested.toFixed(2)}, 日费率预估: ${dailyFeeRatePct.toFixed(1)}%/天`,
     );
 
-    if (this.config.larkNotification) {
+    if (this.config.larkNotification && (this.config.larkLpOpenEnabled !== false)) {
       sendLarkLpOpenAlert({
         position,
         dryRun: isDryRun,
@@ -1576,7 +1581,7 @@ export class LpService {
 
           console.log(`💰 [LpService] $${pos.symbol} 触发保本提润: 已提回 $${withdrawAmount.toFixed(2)} USDG`);
 
-          if (this.config.larkNotification) {
+          if (this.config.larkNotification && (this.config.larkLpCollectEnabled !== false)) {
             sendLarkLpCollectAlert({
               position: pos,
               harvestedFeeUsd: withdrawAmount,
@@ -1722,7 +1727,7 @@ export class LpService {
       `🔄 [LpService] $${pos.symbol} 智能移仓完成 (第 ${pos.rebalanceCount} 次, 模式: ${pos.dryRun ? "模拟" : "实盘"}): 新中枢价 $${newPrice.toFixed(4)}`,
     );
 
-    if (this.config.larkNotification) {
+    if (this.config.larkNotification && (this.config.larkLpRebalanceEnabled !== false)) {
       const driftPct = Math.abs((newPrice - oldPrice) / oldPrice) * 100;
       sendLarkLpRebalanceAlert({
         position: pos,
@@ -1930,7 +1935,16 @@ export class LpService {
       `🏁 [LpService] 结项归档: $${pos.symbol} (模式: ${pos.dryRun ? "模拟" : "实盘"}), 净盈亏: $${pos.netPnlUsd.toFixed(2)} (${pos.netPnlPct.toFixed(1)}%), 原因: ${reason}`,
     );
 
-    if (this.config.larkNotification) {
+    if (this.config.larkNotification && (this.config.larkLpCollectEnabled !== false)) {
+      sendLarkLpCollectAlert({
+        position: pos,
+        harvestedFeeUsd: pos.feeEarnedUsd,
+        dryRun: pos.dryRun,
+        webhookUrl: this.config.webhookUrl,
+      }).catch((err) => console.warn("[LpService] Lark 结项撤池告警失败:", err));
+    }
+
+    if (this.config.larkNotification && (this.config.larkLpDailyReportEnabled !== false)) {
       const state = this.getState();
       const stats = pos.dryRun ? state.paperStats : state.liveStats;
       const filteredClosed = this.closedPositions.filter((p) => p.dryRun === pos.dryRun);

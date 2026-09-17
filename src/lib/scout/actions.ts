@@ -210,6 +210,9 @@ export const updateTradeConfig = createServerFn({ method: "POST" })
       maxHoldTimeMinutes?: number;
       emergencyLiquidityDrainPct?: number;
       larkTradeNotification?: boolean;
+      larkTradeBuyEnabled?: boolean;
+      larkTradeSellEnabled?: boolean;
+      larkTradeReportEnabled?: boolean;
     }) => input,
   )
   .handler(async ({ data }) => {
@@ -300,6 +303,11 @@ export const updateLpConfig = createServerFn({ method: "POST" })
       enableHotTokensLp?: boolean;
       hotTokensCapitalUsd?: number;
       larkNotification?: boolean;
+      larkLpOpenEnabled?: boolean;
+      larkLpCollectEnabled?: boolean;
+      larkLpRebalanceEnabled?: boolean;
+      larkLpOpportunityEnabled?: boolean;
+      larkLpDailyReportEnabled?: boolean;
       webhookUrl?: string;
     }) => input,
   )

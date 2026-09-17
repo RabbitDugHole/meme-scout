@@ -98,6 +98,9 @@ export class TradeService {
     maxHoldTimeMinutes: 360, // 6 hours max hold time
     emergencyLiquidityDrainPct: 35, // Force sell if pool loses >35% liq
     larkTradeNotification: true,
+    larkTradeBuyEnabled: true,
+    larkTradeSellEnabled: true,
+    larkTradeReportEnabled: true,
     walletAddress: undefined,
     hasBscKey: false,
     hasRhKey: false,
@@ -504,7 +507,7 @@ export class TradeService {
     this.saveToStorage();
 
     // Send Lark Buy Notification
-    if (this.config.larkTradeNotification) {
+    if (this.config.larkTradeNotification && (this.config.larkTradeBuyEnabled !== false)) {
       sendLarkTradeAlert({
         type: "BUY",
         position,
@@ -734,7 +737,7 @@ export class TradeService {
     this.saveToStorage();
 
     // Lark Trade Notification
-    if (this.config.larkTradeNotification) {
+    if (this.config.larkTradeNotification && (this.config.larkTradeSellEnabled !== false)) {
       sendLarkTradeAlert({
         type: txType,
         position: pos,
@@ -767,7 +770,7 @@ export class TradeService {
     );
 
     // Send Comprehensive Trade History & PnL Report to Lark
-    if (this.config.larkTradeNotification) {
+    if (this.config.larkTradeNotification && (this.config.larkTradeReportEnabled !== false)) {
       const state = this.getState();
       sendLarkComprehensiveTradeReport({
         closedPosition: pos,
