@@ -99,6 +99,11 @@ const ERC20_ABI = parseAbi([
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function allowance(address owner, address spender) external view returns (uint256)",
   "function balanceOf(address account) external view returns (uint256)",
+  "function decimals() external view returns (uint8)",
+]);
+
+const SWAP_ROUTER_ABI = parseAbi([
+  "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)",
 ]);
 
 export class LpService {
@@ -1110,6 +1115,7 @@ export class LpService {
           let factoryAddress: `0x${string}` = UNISWAP_V3_ROBINHOOD.FACTORY as `0x${string}`;
           let quoteAddress: `0x${string}` = USDG as `0x${string}`;
           let quoteDecimals = 6;
+          let routerAddress: `0x${string}` = UNISWAP_V3_ROBINHOOD.ROUTER as `0x${string}`;
 
           if (targetChain === "bsc") {
             walletChain = bsc;
@@ -1119,6 +1125,7 @@ export class LpService {
             factoryAddress = PANCAKE_V3_BSC.FACTORY as `0x${string}`;
             quoteAddress = PANCAKE_V3_BSC.USDT as `0x${string}`;
             quoteDecimals = 18;
+            routerAddress = PANCAKE_V3_BSC.ROUTER as `0x${string}`;
           } else if (targetChain === "arbitrum") {
             walletChain = arbitrum;
             walletTransport = arbTransport;
@@ -1127,6 +1134,7 @@ export class LpService {
             factoryAddress = UNISWAP_V3_ARBITRUM.FACTORY as `0x${string}`;
             quoteAddress = UNISWAP_V3_ARBITRUM.USDC as `0x${string}`;
             quoteDecimals = 6;
+            routerAddress = UNISWAP_V3_ARBITRUM.ROUTER as `0x${string}`;
           }
 
           const wallet: any = createWalletClient({
@@ -1198,43 +1206,131 @@ export class LpService {
             const token0 = isToken0 ? tokenAddress : quoteAddress;
             const token1 = isToken0 ? quoteAddress : tokenAddress;
 
-            // Approve quoteToken if needed
-            const capitalWei = BigInt(Math.floor(capitalInvested * 10 ** quoteDecimals));
-            const currentAllowance = await activeClient.readContract({
-              address: quoteAddress,
+            // 1. Read target token decimals and current balance
+            const tokenDecimals = await activeClient.readContract({
+              address: tokenAddress,
               abi: ERC20_ABI,
-              functionName: "allowance",
-              args: [account.address, npmAddress],
+              functionName: "decimals",
+            });
+            const initialTargetBalance = await activeClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "balanceOf",
+              args: [account.address],
             });
 
-            if (currentAllowance < capitalWei) {
-              console.log(`[LpService] 🔑 授权本金代币给 PositionManager (${npmAddress})...`);
-              const approveHash = await wallet.writeContract({
+            // 2. Pre-purchase target token using quoteToken via SwapRouter if balance is insufficient
+            const estTargetTokensNeeded = BigInt(
+              Math.max(1, Math.floor((capitalInvested / Math.max(0.000001, params.priceUsd)) * 10 ** tokenDecimals))
+            );
+            let targetTokenAvailable = initialTargetBalance;
+
+            const capitalWei = BigInt(Math.floor(capitalInvested * 10 ** quoteDecimals));
+
+            if (initialTargetBalance < (estTargetTokensNeeded * 8n) / 10n) {
+              const quoteSymbol = targetChain === "bsc" ? "USDT" : targetChain === "arbitrum" ? "USDC" : "USDG";
+              console.log(`[LpService] 🛒 预先购买热门上升期代币 $${params.symbol}: 投入 $${capitalInvested.toFixed(2)} ${quoteSymbol}...`);
+
+              const quoteAllowance = await activeClient.readContract({
                 address: quoteAddress,
                 abi: ERC20_ABI,
-                functionName: "approve",
-                args: [npmAddress, 2n ** 256n - 1n],
+                functionName: "allowance",
+                args: [account.address, routerAddress],
               });
-              await activeClient.waitForTransactionReceipt({ hash: approveHash });
-              console.log(`[LpService] ✅ 本金授权成功: ${approveHash}`);
+
+              if (quoteAllowance < capitalWei) {
+                console.log(`[LpService] 🔑 授权本金代币给 SwapRouter (${routerAddress})...`);
+                const approveHash = await wallet.writeContract({
+                  address: quoteAddress,
+                  abi: ERC20_ABI,
+                  functionName: "approve",
+                  args: [routerAddress, 2n ** 256n - 1n],
+                });
+                await activeClient.waitForTransactionReceipt({ hash: approveHash });
+                console.log(`[LpService] ✅ 授权 SwapRouter 成功: ${approveHash}`);
+              }
+
+              const swapHash = await wallet.writeContract({
+                address: routerAddress,
+                abi: SWAP_ROUTER_ABI,
+                functionName: "exactInputSingle",
+                args: [{
+                  tokenIn: quoteAddress,
+                  tokenOut: tokenAddress,
+                  fee: selectedFee,
+                  recipient: account.address,
+                  amountIn: capitalWei,
+                  amountOutMinimum: 0n,
+                  sqrtPriceLimitX96: 0n,
+                }],
+              });
+              console.log(`[LpService] ⏳ Swap 预买交易已广播: ${swapHash}，等待链上确认...`);
+              await activeClient.waitForTransactionReceipt({ hash: swapHash });
+
+              const afterSwapBalance = await activeClient.readContract({
+                address: tokenAddress,
+                abi: ERC20_ABI,
+                functionName: "balanceOf",
+                args: [account.address],
+              });
+              targetTokenAvailable = afterSwapBalance > initialTargetBalance ? afterSwapBalance - initialTargetBalance : afterSwapBalance;
+              console.log(`[LpService] 🎯 成功买入标的代币: ${formatUnits(targetTokenAvailable, tokenDecimals)} $${params.symbol}`);
+            } else {
+              targetTokenAvailable = estTargetTokensNeeded < initialTargetBalance ? estTargetTokensNeeded : initialTargetBalance;
+              console.log(`[LpService] 💼 钱包已持有充足标的代币: ${formatUnits(targetTokenAvailable, tokenDecimals)} $${params.symbol}，直接挂上方单边LP`);
             }
 
-            // Single-sided range order (below current price)
+            // 3. Calculate Upper Single-Sided Range (挂上方单边代币池，100%代币，0稳定币)
+            const upperTargetPct = isRwa
+              ? (this.config.rwaBandWidthPct || 10)
+              : (this.config.singleSidedUpperCorePct || 20);
+
+            const upperOffsetTicks = Math.max(
+              tickSpacing * 2,
+              Math.round(Math.log(1 + upperTargetPct / 100) / Math.log(1.0001)),
+            );
+
             let tickLower: number;
             let tickUpper: number;
             let amount0Desired: bigint;
             let amount1Desired: bigint;
 
-            if (token1.toLowerCase() === quoteAddress.toLowerCase()) {
-              tickLower = Math.floor((currentTick - 1000) / tickSpacing) * tickSpacing;
-              tickUpper = Math.floor((currentTick - 200) / tickSpacing) * tickSpacing;
-              amount0Desired = 0n;
-              amount1Desired = capitalWei;
-            } else {
-              tickLower = Math.ceil((currentTick + 200) / tickSpacing) * tickSpacing;
-              tickUpper = Math.ceil((currentTick + 1000) / tickSpacing) * tickSpacing;
-              amount0Desired = capitalWei;
+            if (token0.toLowerCase() === tokenAddress.toLowerCase()) {
+              // Target token is token0 (P = token1/token0 = quote/target)
+              // Higher target price in USD means HIGHER tick.
+              // Upper range (above current price) starts right above currentTick
+              tickLower = Math.ceil((currentTick + tickSpacing) / tickSpacing) * tickSpacing;
+              tickUpper = Math.ceil((tickLower + upperOffsetTicks) / tickSpacing) * tickSpacing;
+              amount0Desired = targetTokenAvailable;
               amount1Desired = 0n;
+            } else {
+              // Target token is token1 (P = token1/token0 = target/quote)
+              // Higher target price in USD means LOWER tick (fewer tokens per USDG).
+              // Upper range in USD price is strictly below currentTick in tick space
+              tickUpper = Math.floor((currentTick - tickSpacing) / tickSpacing) * tickSpacing;
+              tickLower = Math.floor((tickUpper - upperOffsetTicks) / tickSpacing) * tickSpacing;
+              amount0Desired = 0n;
+              amount1Desired = targetTokenAvailable;
+            }
+
+            // 4. Approve Target Token to NonfungiblePositionManager
+            const currentTokenAllowance = await activeClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "allowance",
+              args: [account.address, npmAddress],
+            });
+
+            if (currentTokenAllowance < targetTokenAvailable) {
+              console.log(`[LpService] 🔑 授权标的代币给 PositionManager (${npmAddress})...`);
+              const approveTokenHash = await wallet.writeContract({
+                address: tokenAddress,
+                abi: ERC20_ABI,
+                functionName: "approve",
+                args: [npmAddress, 2n ** 256n - 1n],
+              });
+              await activeClient.waitForTransactionReceipt({ hash: approveTokenHash });
+              console.log(`[LpService] ✅ 标的代币授权成功: ${approveTokenHash}`);
             }
 
             const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
@@ -1353,8 +1449,14 @@ export class LpService {
       netPnlUsd: 0,
       netPnlPct: 0,
       rebalanceCount: 0,
-      upperPiercedTargetPriceUsd: ranges.reduce((max, r) => Math.max(max, r.maxPriceUsd), params.priceUsd),
+      upperPiercedTargetPriceUsd: Math.max(
+        params.priceUsd * (1 + (isRwa ? (this.config.rwaBandWidthPct || 10) : (this.config.singleSidedUpperCorePct || 20)) / 100),
+        ranges.reduce((max, r) => Math.max(max, r.maxPriceUsd), params.priceUsd)
+      ),
       upperPiercedProgressPct: 0,
+      stopLossPriceUsd: params.priceUsd * (1 + (this.config.fastStopLossPct ?? -8) / 100),
+      stopLossPct: this.config.fastStopLossPct ?? -8,
+      strategyType: "UPPER_TAKE_PROFIT",
       status: "ACTIVE",
       txHistory: [txRecord],
     };
@@ -1518,29 +1620,29 @@ export class LpService {
           : 0;
 
         // A. Upper Boundary Pierced Check (穿上沿限价卖出获利清仓)
-        // In Uniswap V3 math, once livePrice >= upperTick, 100% of the meme token is converted into USDG.
+        // In Uniswap V3 math, once livePrice >= upperTick, 100% of the meme/target token is converted into quoteToken (USDG/USDT).
         // We immediately withdraw liquidity to lock in 100% principal + capital gain + accrued fees before price can retrace.
-        const isUpperPierced = (pos.stage === "PUMP" || (this.config.pumpMode === "SINGLE_SIDED_RANGE_ORDER"))
-          && livePrice >= maxRangePrice;
+        const upperTarget = pos.upperPiercedTargetPriceUsd || maxRangePrice;
+        const isUpperPierced = livePrice >= upperTarget;
 
         if (isUpperPierced && (this.config.enableUpperPiercedExit !== false)) {
           await this.closePosition(
             pos.id,
             "CLOSED_TAKEPROFIT_PIERCED",
-            `🎯 价格强势击穿单边做市区间上沿 $${maxRangePrice.toFixed(4)} (代币已100%限价卖出为USDG，穿上沿撤池锁定暴利与手续费 $${pos.feeEarnedUsd.toFixed(2)})`,
+            `🎯 价格强势击穿上方单边做市区间上沿 $${upperTarget.toFixed(4)} (代币已100%全额限价卖出换回稳定币，穿上沿撤池锁定暴利与手续费 $${pos.feeEarnedUsd.toFixed(2)})`,
           );
           continue;
         }
 
-        // B. Fast Stop Loss Check (单边快速防崩止损)
-        const fastSlThreshold = this.config.fastStopLossPct ?? -8;
+        // B. Fast Stop Loss Check (单边快速防崩止损: 无论土狗还是美股RWA，跌破止损线坚决离场)
+        const fastSlThreshold = pos.stopLossPct ?? this.config.fastStopLossPct ?? -8;
         const priceDropPct = ((livePrice - pos.entryPriceUsd) / pos.entryPriceUsd) * 100;
         const isFastSlBreached = priceDropPct <= fastSlThreshold;
-        if (isFastSlBreached && pos.stage === "PUMP") {
+        if (isFastSlBreached && (pos.stage === "PUMP" || pos.strategyType === "UPPER_TAKE_PROFIT" || this.config.pumpMode === "SINGLE_SIDED_RANGE_ORDER" || pos.isRwa)) {
           await this.closePosition(
             pos.id,
             "CLOSED_STOPLOSS",
-            `🛑 触及单边做市快速止损线 (${priceDropPct.toFixed(1)}% <= ${fastSlThreshold}%)，闪电撤池规避山寨币归零风险`,
+            `🛑 触及单边做市快速止损线 (${priceDropPct.toFixed(1)}% <= ${fastSlThreshold}%)，闪电撤池并市价清仓规避深跌与归零风险`,
           );
           continue;
         }
@@ -1730,6 +1832,69 @@ export class LpService {
         await activeClient.waitForTransactionReceipt({ hash: colHash });
         console.log(`[LpService] ✅ 成功提取本金与手续费至钱包: ${colHash}`);
         onChainCloseTx = colHash;
+
+        // In case of stop-loss, immediately sell returned volatile target tokens back to quoteToken
+        if (status === "CLOSED_STOPLOSS") {
+          try {
+            let routerAddress: `0x${string}` = UNISWAP_V3_ROBINHOOD.ROUTER as `0x${string}`;
+            let quoteAddress: `0x${string}` = USDG as `0x${string}`;
+            if (pos.chain === "bsc") {
+              routerAddress = PANCAKE_V3_BSC.ROUTER as `0x${string}`;
+              quoteAddress = PANCAKE_V3_BSC.USDT as `0x${string}`;
+            } else if (pos.chain === "arbitrum") {
+              routerAddress = UNISWAP_V3_ARBITRUM.ROUTER as `0x${string}`;
+              quoteAddress = UNISWAP_V3_ARBITRUM.USDC as `0x${string}`;
+            }
+
+            const tokenAddress = pos.tokenAddress as `0x${string}`;
+            const tokenBal = await activeClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_ABI,
+              functionName: "balanceOf",
+              args: [account.address],
+            });
+
+            if (tokenBal > 0n) {
+              console.log(`[LpService] 🛑 触发止损市价清仓: 正在将代币 $${pos.symbol} (${tokenBal.toString()}) 卖出换回稳定币...`);
+              const curAllowance = await activeClient.readContract({
+                address: tokenAddress,
+                abi: ERC20_ABI,
+                functionName: "allowance",
+                args: [account.address, routerAddress],
+              });
+              if (curAllowance < tokenBal) {
+                const appHash = await wallet.writeContract({
+                  address: tokenAddress,
+                  abi: ERC20_ABI,
+                  functionName: "approve",
+                  args: [routerAddress, 2n ** 256n - 1n],
+                });
+                await activeClient.waitForTransactionReceipt({ hash: appHash });
+              }
+
+              const targetFee = pos.feeTier > 10000 ? 10000 : (pos.feeTier || 500);
+              const sellHash = await wallet.writeContract({
+                address: routerAddress,
+                abi: SWAP_ROUTER_ABI,
+                functionName: "exactInputSingle",
+                args: [{
+                  tokenIn: tokenAddress,
+                  tokenOut: quoteAddress,
+                  fee: targetFee,
+                  recipient: account.address,
+                  amountIn: tokenBal,
+                  amountOutMinimum: 0n,
+                  sqrtPriceLimitX96: 0n,
+                }],
+              });
+              await activeClient.waitForTransactionReceipt({ hash: sellHash });
+              console.log(`[LpService] ✅ 止损市价卖出成功: ${sellHash}`);
+              onChainCloseTx = sellHash;
+            }
+          } catch (slErr: any) {
+            console.warn(`[LpService] ⚠️ 止损市价卖出未能执行:`, slErr?.message || slErr);
+          }
+        }
 
         this.refreshWalletBalances().catch(() => {});
       } catch (err: any) {

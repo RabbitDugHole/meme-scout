@@ -1792,6 +1792,17 @@ export function LpPanel({
                           }}
                         />
                       </div>
+                      <div className="flex flex-wrap items-center justify-between text-[11px] text-muted-foreground pt-1 border-t border-border/30">
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-red-400 font-medium">🛑 快速防崩止损线:</span>
+                          <span className="font-mono text-red-300">
+                            ${(pos.stopLossPriceUsd ?? (pos.entryPriceUsd * 0.92)).toFixed(4)} ({pos.stopLossPct ?? -8}%)
+                          </span>
+                        </span>
+                        <span className="text-muted-foreground text-[10px]">
+                          跌破止损线将闪电撤池并市价卖出代币换回稳定币
+                        </span>
+                      </div>
                     </div>
                   )}
 

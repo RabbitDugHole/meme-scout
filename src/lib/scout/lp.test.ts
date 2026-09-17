@@ -539,6 +539,34 @@ describe("Single-Sided Upper Range Order & Upper Pierced Exit Strategy", () => {
     assert.equal(closed.status, "CLOSED_TAKEPROFIT_PIERCED");
     assert.ok(closed.exitReason?.includes("击穿单边做市区间上沿"));
   });
+
+  test("should record stop-loss threshold and support CLOSED_STOPLOSS on single-sided upper LP", async () => {
+    const pos = await lpService.openLpPosition({
+      tokenAddress: "0x5555555555555555555555555555555555555555",
+      symbol: "SL_TOKEN",
+      chain: "robinhood",
+      priceUsd: 100.0,
+      liquidityUsd: 50000,
+      volume5m: 20000,
+      stage: "PUMP",
+      customCapitalUsd: 50,
+      dryRun: true,
+    });
+
+    assert.equal(pos.strategyType, "UPPER_TAKE_PROFIT");
+    assert.ok(pos.stopLossPriceUsd && pos.stopLossPriceUsd < 100.0, "Stop loss price must be below entry");
+    assert.equal(pos.stopLossPct, -8);
+
+    const closed = await lpService.closePosition(
+      pos.id,
+      "CLOSED_STOPLOSS",
+      "🛑 触及单边做市快速止损线 (-8.5% <= -8%)，闪电撤池并市价清仓",
+    );
+
+    assert.ok(closed);
+    assert.equal(closed.status, "CLOSED_STOPLOSS");
+    assert.ok(closed.exitReason?.includes("快速止损线"));
+  });
 });
 
 

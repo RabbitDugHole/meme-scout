@@ -627,6 +627,10 @@ export type LpPosition = {
   
   upperPiercedTargetPriceUsd?: number; // Target price where 100% tokens converted to USDG
   upperPiercedProgressPct?: number; // 0-100% progress towards piercing upper bound
+  stopLossPriceUsd?: number; // Stop-loss price threshold (triggers flash exit + market sell)
+  stopLossPct?: number; // Stop-loss drop percentage (e.g. -8%)
+  preSwappedTokenAmount?: number; // Units of target token pre-purchased for single-sided LP
+  strategyType?: "UPPER_TAKE_PROFIT" | "ASYMMETRIC_GRID"; // Strategy paradigm
 
   status:
     | "ACTIVE"
