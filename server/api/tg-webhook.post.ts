@@ -77,6 +77,13 @@ export default defineEventHandler(async (event) => {
             address: result.parsed.address,
             chain: result.parsed.chain,
             channel: result.parsed.channel,
+            pushIndex: result.parsed.pushIndex,
+            intervalMin: result.parsed.intervalMin,
+            volume5mUsd: result.parsed.volume5mUsd,
+            top10Pct: result.parsed.top10Pct,
+            phishPct: result.parsed.phishPct,
+            bundlePct: result.parsed.bundlePct,
+            fomo: result.parsed.fomo,
           }
         : undefined,
       evaluation: result.evaluation

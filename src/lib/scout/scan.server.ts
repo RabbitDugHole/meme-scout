@@ -23,6 +23,7 @@ import { mapLimit, num } from "./http";
 import { fetchStockAssets, matchStock } from "./stocks";
 import { erc20Meta } from "./rpc";
 import type { Candidate, ScanResult, Stage, StockPair } from "./types";
+import { getFomoByCa, listFomoEvents } from "./fomo-ladder";
 
 type Cache = { at: number; result: ScanResult };
 let cache: Cache | null = null;
@@ -223,7 +224,17 @@ export async function runScan(force = false): Promise<ScanResult> {
 
       const candidate = applyGrade(base);
       const indicators = evaluateMemeToken(candidate, dexMap.get(address));
-      return { ...candidate, indicators };
+      const fomo = getFomoByCa(address) ?? null;
+      if (fomo?.kind === "toxic") {
+        return {
+          ...candidate,
+          indicators,
+          fomo,
+          verdict: "SKIP" as const,
+          reasons: [...candidate.reasons, `FOMO tape: ${fomo.reason}`],
+        };
+      }
+      return { ...candidate, indicators, fomo };
     });
 
     const candidates = hydrated.sort((a, b) => {
@@ -250,6 +261,7 @@ export async function runScan(force = false): Promise<ScanResult> {
       alerts: candidates.filter((c) => c.verdict === "ALERT"),
       late: candidates.filter((c) => c.verdict === "LATE"),
       skipped: candidates.filter((c) => c.verdict === "SKIP"),
+      fomoEvents: listFomoEvents(),
     };
     cache = { at: Date.now(), result };
     return result;
@@ -270,6 +282,7 @@ export async function runScan(force = false): Promise<ScanResult> {
       alerts: [],
       late: [],
       skipped: [],
+      fomoEvents: listFomoEvents(),
     };
     return result;
   }
@@ -359,7 +372,17 @@ export async function inspectAddress(address: string): Promise<Candidate | { err
     soft,
   });
   const indicators = evaluateMemeToken(candidate, dexMap.get(addr));
-  return { ...candidate, indicators };
+  const fomo = getFomoByCa(addr) ?? null;
+  if (fomo?.kind === "toxic") {
+    return {
+      ...candidate,
+      indicators,
+      fomo,
+      verdict: "SKIP",
+      reasons: [...candidate.reasons, `FOMO tape: ${fomo.reason}`],
+    };
+  }
+  return { ...candidate, indicators, fomo };
 }
 
 export async function quotePrices(addresses: string[]) {
