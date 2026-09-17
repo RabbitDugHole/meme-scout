@@ -64,13 +64,16 @@
 5. **早期聪明钱动向**：2 小时内至少记录 `≥ 2 笔 ≥ $200` 的真实买单
 
 ### 3. L3 非对称集中流动性做市系统 (Asymmetric Concentrated LP)
-基于 Uniswap V3 与 V4 机制设计的做市系统，提供**实盘 (Live)** 与 **模拟 (Paper)** 双环境严格隔离运作：
-- **Uniswap V3 实盘链上铸造**：直连官方 `NonfungiblePositionManager` 合约，自动完成 USDG / WETH 代币授权 (`approve`)、精确 `slot0` Tick 对齐与 NFT 铸造 (`mint`)。
+基于 Uniswap V3、PancakeSwap V3 与 Uniswap V4 机制设计的做市系统，提供**实盘 (Live)** 与 **模拟 (Paper)** 双环境严格隔离运作：
+- **多链 DEX 真实链上铸造**：直连各链官方 `NonfungiblePositionManager` 合约，自动完成授权 (`approve`)、精确 `slot0` Tick 对齐与 NFT 铸造 (`mint`)。
 - **Uniswap V4 Barker 高频费率雷达**：集成 Barker 交易终端（`50000` 即 5% 费率梯度），实时监控高换手资金池，模拟复利流动性。
 - **策略模式 (Strategy Modes)**：
-  - **PUMP 阶段 (单边上方集中做市限价挂单)**：
-    - 将 60% 资金置于 **核心费率收益区 [+0% ~ +20%]**，40% 资金置于 **冲高追击区 [+20% ~ +45%]**。
-    - **限价卖出收租机制**：价格大幅上涨时，流动性被动全部成交转换为 USDG；当价格穿透上沿时自动撤池全额获利清算，既赚取天量交易摩擦手续费，又实现现货高位分批止盈。
+  - **PUMP 阶段 (热门币上方单边阶梯止盈做市)**：
+    - **先行买入 (Pre-Swap)**：雷达扫描到处于爆发上升期或高热度的标的（如 $TSLA、新晋金狗）时，先使用做市资金买入现货 Token。
+    - **上方单边挂单 (Upper Single-Sided LP)**：在当前价格上方设立纯 Token 集中流动性池（`[P0, P0 * (1 + delta)]`），无需配对稳定币。
+    - **分层收租吃手续费**：60% 资金置于核心费率区，40% 资金置于冲高追击区。拉盘期间每一笔外部买单都在为做市商持续纳贡 1%~5% 手续费。
+    - **穿透上沿全额止盈 (Upper Pierced Exit)**：价格涨破上沿时，Token 100% 兑换为稳定币，系统自动执行撤池，锁定全额本金增值与手续费收益。
+    - **单边快速防崩止损 (Fast Stop-Loss)**：价格若反向跌破设定的单边止损线（如 -8%），系统立即闪电撤池并市价清仓换回稳定币，防止深套。
   - **SIDEWAYS 阶段 (震荡核心箱体)**：
     - 70% 资金置于 `±15%` 核心做市带宽，15% 底部防御，15% 上沿收租。
   - **RWA_STABLE 阶段 (美股代币做市)**：
@@ -86,7 +89,8 @@
 - **模拟做市沙盒**：支持零风险模拟开池与做市收益实时追踪。
 - **自动化回测守护进程**：每小时与每日定时对历史做市与建仓代币进行多时间窗口（1h / 24h）收益核算，生成胜率、盈亏比与收益曲线。
 
-### 5. 飞书 (Lark) 富文本卡片系统
+### 5. 飞书 (Lark) 富文本卡片系统 (支持细粒度独立启停)
+- **细粒度通知矩阵**：支持在 Web 后台一键启闭「新币雷达」、「TG 信号」、「回测胜率」、「现货买卖」、「LP 开池」、「LP 撤池止盈止损」、「LP 智能移仓」、「高费率机会雷达」及「每日收益综合日报」。
 - **高收益 LP 机会雷达卡片**：换手率异常、费率激增时即刻推送。
 - **开池 / 移仓 / 撤池交易报告卡片**：附带链上 Tx 哈希、开仓 Tick 区间、实时手续费收益与无常损失指标。
 - **每日做市收益日报卡片**：定时汇总当日做市池整体盈亏、年化费率与胜率。
@@ -95,7 +99,7 @@
 
 ## ⛓️ 链上核心合约与参数规范 (On-Chain Reference)
 
-### Robinhood Chain (ID: `4663`)
+### 1. Robinhood Chain (ID: `4663`)
 - **RPC 节点**：`https://rpc.mainnet.chain.robinhood.com`
 - **区块浏览器**：`https://explorer.mainnet.chain.robinhood.com`
 - **主要代币**：
@@ -110,6 +114,22 @@
   - **Pons Factory**：`0x7ed598bcef8bd9edd8c97a195c6d13f40801ec7e`
   - **Pons Locker**：`0x267444d099b10fb5ed7c3cc7b7c767adca574952`
   - **Pons Hook**：`0xe5e702641ea86f4ae6cc3cdaed2b886f976be044`
+
+### 2. BNB Smart Chain / BSC (ID: `56`)
+- **RPC 节点**：`https://binance.llamarpc.com`
+- **区块浏览器**：`https://bscscan.com`
+- **主要代币**：**USDT** (`0x55d398326f99059fF775485246999027B3197955`) / **WBNB** (`0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c`)
+- **PancakeSwap V3 官方合约**：
+  - **NonfungiblePositionManager**：`0x46A15B0b27311cedF172AB29E4f4766fbE521570`
+  - **SwapRouter**：`0x13f4EA83D0bd40E75C8222255bc855a974568Dd4`
+
+### 3. Arbitrum One (ID: `42161`)
+- **RPC 节点**：`https://arb1.arbitrum.io/rpc`
+- **区块浏览器**：`https://arbiscan.io`
+- **主要代币**：**USDC** (`0xaf88d065e77c8cC2239327C5EDb3A432268e5831`) / **WETH** (`0x82aF49447D8a07e3bd95BD0d56f35241523fBab1`)
+- **Uniswap V3 官方合约**：
+  - **NonfungiblePositionManager**：`0xC36442b4a4522E871399CD717aBDD847Ab11FE88`
+  - **SwapRouter02**：`0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`
 
 ---
 
